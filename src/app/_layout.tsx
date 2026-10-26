@@ -37,6 +37,7 @@ export default function RootLayout() {
           <UserDictionaryLoader />
           <Stack>
             <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+            <Stack.Screen name="money" options={{ headerShown: false }} />
             <Stack.Screen name="deck/[id]" options={{ title: 'Deck' }} />
             <Stack.Screen name="entry/[id]" options={{ title: 'Word' }} />
             <Stack.Screen name="review" options={{ title: 'Review', presentation: 'modal' }} />

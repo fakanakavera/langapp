@@ -1,12 +1,13 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet, TextInput, View } from 'react-native';
 
 import { CardBlock } from '@/components/card-block';
 import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
 import { UiButton } from '@/components/ui-button';
 import { Spacing } from '@/constants/theme';
+import { useTheme } from '@/hooks/use-theme';
 import { getDeck, listDueCards } from '@/db/queries';
 import type { Deck, DueCard } from '@/db/types';
 import { speakEnglish, speakRussian, stopSpeech, toSpokenEnglish } from '@/lib/speech';
@@ -29,11 +30,14 @@ function shuffle<T>(items: T[]): T[] {
 export default function RecallScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const theme = useTheme();
   const [deck, setDeck] = useState<Deck | null>(null);
   const [queue, setQueue] = useState<DueCard[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [index, setIndex] = useState(0);
   const [mode, setMode] = useState<'en' | 'ru' | 'both'>('en');
+  const [autoAdvance, setAutoAdvance] = useState(false);
+  const [autoAdvanceText, setAutoAdvanceText] = useState('5');
 
   useEffect(() => {
     if (!id) return;
@@ -86,6 +90,21 @@ export default function RecallScreen() {
       stopSpeech();
     };
   }, [currentId, english, russian, mode]);
+
+  useEffect(() => {
+    const seconds = Number(autoAdvanceText);
+    if (
+      !currentId ||
+      !autoAdvance ||
+      !/^\d+$/.test(autoAdvanceText) ||
+      seconds < 1 ||
+      seconds > 300
+    ) {
+      return;
+    }
+    const timer = setTimeout(() => setIndex((i) => i + 1), seconds * 1000);
+    return () => clearTimeout(timer);
+  }, [autoAdvance, autoAdvanceText, currentId]);
 
   function onRetry() {
     setQueue((prev) => shuffle(prev));
@@ -155,6 +174,45 @@ export default function RecallScreen() {
           style={styles.toggle}
         />
       </View>
+      <CardBlock>
+        <ThemedText type="smallBold">Auto-advance</ThemedText>
+        <ThemedText type="small" themeColor="textSecondary">
+          Move to the next word after this many seconds. Speech keeps playing between words.
+        </ThemedText>
+        <View style={styles.autoAdvanceRow}>
+          <UiButton
+            label={autoAdvance ? 'On' : 'Off'}
+            variant={autoAdvance ? 'primary' : 'secondary'}
+            onPress={() => setAutoAdvance((enabled) => !enabled)}
+            style={styles.autoAdvanceToggle}
+          />
+          <TextInput
+            accessibilityLabel="Seconds per word"
+            keyboardType="number-pad"
+            maxLength={3}
+            value={autoAdvanceText}
+            onChangeText={(value) => setAutoAdvanceText(value.replace(/[^0-9]/g, ''))}
+            selectTextOnFocus
+            style={[
+              styles.secondsInput,
+              {
+                backgroundColor: theme.backgroundElement,
+                color: theme.text,
+                borderColor: theme.backgroundSelected,
+              },
+            ]}
+          />
+          <ThemedText>seconds</ThemedText>
+        </View>
+        {autoAdvance &&
+        (!/^\d+$/.test(autoAdvanceText) ||
+          Number(autoAdvanceText) < 1 ||
+          Number(autoAdvanceText) > 300) ? (
+          <ThemedText type="small" themeColor="error">
+            Choose a time from 1 to 300 seconds.
+          </ThemedText>
+        ) : null}
+      </CardBlock>
       <UiButton label="Next word" onPress={() => setIndex((i) => i + 1)} />
     </Screen>
   );
@@ -179,5 +237,23 @@ const styles = StyleSheet.create({
     flexGrow: 0,
     flexShrink: 0,
     minWidth: 80,
+  },
+  autoAdvanceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    flexWrap: 'wrap',
+  },
+  autoAdvanceToggle: {
+    minWidth: 88,
+  },
+  secondsInput: {
+    minWidth: 72,
+    borderWidth: 1,
+    borderRadius: Spacing.two,
+    paddingHorizontal: Spacing.two,
+    paddingVertical: Spacing.two,
+    textAlign: 'center',
+    fontSize: 16,
   },
 });
