@@ -58,6 +58,8 @@ export type CardRow = {
   reps: number;
   lapses: number;
   state: number;
+  mastery_tier: number;
+  quiz_due: string;
   last_review: string | null;
   review_face: ReviewFace;
   review_history: FaceResponse[];

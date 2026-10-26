@@ -1,5 +1,5 @@
 import type { Grade } from 'ts-fsrs';
-import { Rating, State } from 'ts-fsrs';
+import { Rating } from 'ts-fsrs';
 
 import { getDb } from '@/db/client';
 import type {
@@ -20,6 +20,11 @@ import type {
 import { nowIso, toIso } from '@/lib/dates';
 import { createId } from '@/lib/id';
 import { normalizeRussian, stripAccents } from '@/morphology/dictionary';
+import {
+  MASTERY_FREE_REVIEW_TIER,
+  masteryIntervalMs,
+  masteryTierAfterQuiz,
+} from '@/lib/mastery';
 import { emptyFsrsCard, ladderDelayMs, ladderScheduledDays, scheduleReview, streakIncludingCurrent } from '@/srs/scheduler';
 
 function parseReviewHistory(raw: string | FaceResponse[] | null | undefined): FaceResponse[] {
@@ -54,6 +59,8 @@ function facesToJson(value: unknown): string {
 function mapCardRow(raw: any): CardRow & { lemma?: string; gloss?: string; deck_name?: string } {
   return {
     ...raw,
+    mastery_tier: Number(raw.mastery_tier ?? 0),
+    quiz_due: String(raw.quiz_due || raw.due),
     review_history: parseReviewHistory(raw.review_history),
   };
 }
@@ -169,6 +176,31 @@ export async function listDueCards(deckId?: string): Promise<DueCard[]> {
      ORDER BY c.due ASC`,
     now,
   );
+  return rows.map(mapCardRow) as DueCard[];
+}
+
+export async function listQuizDueCards(deckId?: string): Promise<DueCard[]> {
+  const now = nowIso();
+  const rows = deckId
+    ? await getDb().getAllAsync<any>(
+        `SELECT c.*, e.lemma, e.gloss, d.name AS deck_name
+         FROM cards c
+         JOIN entries e ON e.id = c.entry_id
+         JOIN decks d ON d.id = c.deck_id
+         WHERE c.deck_id = ? AND c.quiz_due <= ?
+         ORDER BY c.quiz_due ASC`,
+        deckId,
+        now,
+      )
+    : await getDb().getAllAsync<any>(
+        `SELECT c.*, e.lemma, e.gloss, d.name AS deck_name
+         FROM cards c
+         JOIN entries e ON e.id = c.entry_id
+         JOIN decks d ON d.id = c.deck_id
+         WHERE c.quiz_due <= ?
+         ORDER BY c.quiz_due ASC`,
+        now,
+      );
   return rows.map(mapCardRow) as DueCard[];
 }
 
@@ -335,6 +367,8 @@ export async function addVocabulary(input: {
     reps: fsrs.reps,
     lapses: fsrs.lapses,
     state: fsrs.state,
+    mastery_tier: 0,
+    quiz_due: fsrs.due.toISOString(),
     last_review: null,
     review_face: 1,
     review_history: [],
@@ -371,8 +405,8 @@ export async function addVocabulary(input: {
       `INSERT INTO cards (
         id, deck_id, entry_id, card_type, front, back,
         due, stability, difficulty, elapsed_days, scheduled_days, learning_steps,
-        reps, lapses, state, last_review, review_face, review_history, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+        reps, lapses, state, mastery_tier, quiz_due, last_review, review_face, review_history, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
       card.id,
       card.deck_id,
       card.entry_id,
@@ -388,6 +422,8 @@ export async function addVocabulary(input: {
       card.reps,
       card.lapses,
       card.state,
+      card.mastery_tier,
+      card.quiz_due,
       card.review_face,
       JSON.stringify(card.review_history),
       card.created_at,
@@ -428,7 +464,8 @@ export async function resetCardDueDate(cardId: string): Promise<void> {
   const db = getDb();
   const now = nowIso();
   await db.runAsync(
-    `UPDATE cards SET due = ?, review_face = 1, review_history = '[]' WHERE id = ?`,
+    `UPDATE cards SET due = ?, quiz_due = ?, review_face = 1, review_history = '[]' WHERE id = ?`,
+    now,
     now,
     cardId,
   );
@@ -454,10 +491,11 @@ export async function resetDeckStats(deckId: string): Promise<number> {
     );
     await db.runAsync(
       `UPDATE cards SET
-         due = ?, stability = ?, difficulty = ?, elapsed_days = ?, scheduled_days = ?,
+         due = ?, quiz_due = ?, stability = ?, difficulty = ?, elapsed_days = ?, scheduled_days = ?,
          learning_steps = ?, reps = ?, lapses = ?, state = ?, last_review = NULL,
-         review_face = 1, review_history = '[]'
+         mastery_tier = 0, review_face = 1, review_history = '[]'
        WHERE deck_id = ?`,
+      fresh.due.toISOString(),
       fresh.due.toISOString(),
       fresh.stability,
       fresh.difficulty,
@@ -522,8 +560,8 @@ export async function reviewCard(
 ): Promise<CardRow> {
   const db = getDb();
   // Stamp the graded feature for history/stats. Old rows without a
-  // source read as 'review'. Scheduling runs on the streak ladder:
-  // consecutive non-Again reviews stretch the interval, one Again resets.
+  // source read as 'review'. Normal reviews use the streak ladder;
+  // multiple-choice reviews use their separate mastery tiers.
   const stamped: FaceResponse[] = history.map((h) => ({
     ...h,
     source: h.source ?? opts?.source ?? 'review',
@@ -564,6 +602,18 @@ export async function reviewCard(
   let dueDate = result.card.due;
   let scheduledDays = result.card.scheduled_days;
   let stability = result.card.stability;
+  const quizReview = stamped.some((face) => face.source === 'quiz');
+  const masteryTier = quizReview
+    ? masteryTierAfterQuiz(card.mastery_tier, rating !== Rating.Again)
+    : card.mastery_tier;
+  const quizDue = quizReview
+    ? new Date(
+        now.getTime() +
+          (rating === Rating.Again
+            ? masteryTier <= MASTERY_FREE_REVIEW_TIER ? 0 : MISS_DUE_DELAY_MS
+            : masteryIntervalMs(masteryTier)),
+      ).toISOString()
+    : card.quiz_due;
   if (rating === Rating.Again) {
     // Negative bonus: force the miss back into rotation. Due beats FSRS
     // (~10 min) down to ~1 min; stability is haircut so the following
@@ -590,6 +640,8 @@ export async function reviewCard(
     reps: result.card.reps,
     lapses: result.card.lapses,
     state: result.card.state,
+    mastery_tier: masteryTier,
+    quiz_due: quizDue,
     last_review: toIso(result.card.last_review) ?? now.toISOString(),
     review_face: 1,
     review_history: [],
@@ -607,6 +659,19 @@ export async function reviewCard(
     other && otherResult
       ? {
           ...other,
+          mastery_tier:
+            opts?.distractor?.source === 'quiz-distractor'
+              ? masteryTierAfterQuiz(other.mastery_tier, false)
+              : other.mastery_tier,
+          quiz_due:
+            opts?.distractor?.source === 'quiz-distractor'
+              ? new Date(
+                  now.getTime() +
+                    (masteryTierAfterQuiz(other.mastery_tier, false) <= MASTERY_FREE_REVIEW_TIER
+                      ? 0
+                      : MISS_DUE_DELAY_MS),
+                ).toISOString()
+              : other.quiz_due,
           due:
             otherPenaltyDue.getTime() < otherResult.card.due.getTime()
               ? otherPenaltyDue.toISOString()
@@ -632,7 +697,7 @@ export async function reviewCard(
     await db.runAsync(
       `UPDATE cards SET
         due = ?, stability = ?, difficulty = ?, elapsed_days = ?, scheduled_days = ?,
-        learning_steps = ?, reps = ?, lapses = ?, state = ?, last_review = ?,
+        learning_steps = ?, reps = ?, lapses = ?, state = ?, mastery_tier = ?, quiz_due = ?, last_review = ?,
         review_face = ?, review_history = ?
        WHERE id = ?`,
       updated.due,
@@ -644,6 +709,8 @@ export async function reviewCard(
       updated.reps,
       updated.lapses,
       updated.state,
+      updated.mastery_tier,
+      updated.quiz_due,
       updated.last_review,
       updated.review_face,
       JSON.stringify(updated.review_history),
@@ -673,7 +740,7 @@ export async function reviewCard(
       await db.runAsync(
         `UPDATE cards SET
           due = ?, stability = ?, difficulty = ?, elapsed_days = ?, scheduled_days = ?,
-          learning_steps = ?, reps = ?, lapses = ?, state = ?, last_review = ?,
+          learning_steps = ?, reps = ?, lapses = ?, state = ?, mastery_tier = ?, quiz_due = ?, last_review = ?,
           review_face = ?, review_history = ?
          WHERE id = ?`,
         otherUpdated.due,
@@ -685,6 +752,8 @@ export async function reviewCard(
         otherUpdated.reps,
         otherUpdated.lapses,
         otherUpdated.state,
+        otherUpdated.mastery_tier,
+        otherUpdated.quiz_due,
         otherUpdated.last_review,
         otherUpdated.review_face,
         JSON.stringify(otherUpdated.review_history),
@@ -851,12 +920,7 @@ export async function listReviewsForEntry(entryId: string, limit = 20): Promise<
 export type DeckStats = {
   totalReviews: number;
   distinctCards: number;
-  wordTiers: {
-    new: number;
-    learning: number;
-    review: number;
-    relearning: number;
-  };
+  masteryTiers: number[];
   /** Summed face durations (ms). Only reviews recorded with timings count. */
   studyMs: number;
   timedReviews: number;
@@ -879,15 +943,15 @@ export async function getDeckStats(deckId: string): Promise<DeckStats> {
        WHERE c.deck_id = ?`,
       deckId,
     ),
-    db.getAllAsync<{ entry_id: string; state: number }>(
-      'SELECT entry_id, state FROM cards WHERE deck_id = ?',
+    db.getAllAsync<{ entry_id: string; mastery_tier: number }>(
+      'SELECT entry_id, mastery_tier FROM cards WHERE deck_id = ?',
       deckId,
     ),
   ]);
   const stats: DeckStats = {
     totalReviews: rows.length,
     distinctCards: 0,
-    wordTiers: { new: 0, learning: 0, review: 0, relearning: 0 },
+    masteryTiers: Array.from({ length: 11 }, () => 0),
     studyMs: 0,
     timedReviews: 0,
     face1Know: 0,
@@ -899,28 +963,13 @@ export async function getDeckStats(deckId: string): Promise<DeckStats> {
     face3KnewConfirm: 0,
   };
 
-  const tierByState = (state: number): keyof DeckStats['wordTiers'] => {
-    if (state === State.Review) return 'review';
-    if (state === State.Learning) return 'learning';
-    if (state === State.Relearning) return 'relearning';
-    return 'new';
-  };
-  const tierRank: Record<keyof DeckStats['wordTiers'], number> = {
-    new: 0,
-    relearning: 1,
-    learning: 2,
-    review: 3,
-  };
-  const wordTiers = new Map<string, keyof DeckStats['wordTiers']>();
+  const wordTiers = new Map<string, number>();
   for (const card of cards) {
-    const tier = tierByState(card.state);
-    const previous = wordTiers.get(card.entry_id);
-    if (!previous || tierRank[tier] > tierRank[previous]) {
-      wordTiers.set(card.entry_id, tier);
-    }
+    const tier = Math.max(0, Math.min(10, Math.trunc(card.mastery_tier ?? 0)));
+    wordTiers.set(card.entry_id, Math.max(tier, wordTiers.get(card.entry_id) ?? 0));
   }
   for (const tier of wordTiers.values()) {
-    stats.wordTiers[tier] += 1;
+    stats.masteryTiers[tier] += 1;
   }
 
   const seenCards = new Set<string>();
@@ -1122,18 +1171,16 @@ export type KnownForm = {
 };
 
 /**
- * Every word form the app already knows (inflections + lemmas), for
- * highlighting known words in the reader. Small decks: a few thousand
- * rows at most.
+ * Word forms belonging to cards in any deck, for book lookup and progress.
  */
-export async function listKnownWordForms(): Promise<KnownForm[]> {
+export async function listBookWordForms(): Promise<KnownForm[]> {
   const rows = await getDb().getAllAsync<any>(
     `SELECT i.form AS form, e.id AS entry_id, e.lemma AS lemma, e.gloss AS gloss,
-            COALESCE(d.name, '') AS deck_name
+            d.name AS deck_name
       FROM inflections i
       JOIN entries e ON e.id = i.entry_id
-      LEFT JOIN cards c ON c.entry_id = e.id
-      LEFT JOIN decks d ON d.id = c.deck_id`,
+      JOIN cards c ON c.entry_id = e.id
+      JOIN decks d ON d.id = c.deck_id`,
   );
   const out: KnownForm[] = rows.map((row) => ({
     form: row.form,
@@ -1142,15 +1189,14 @@ export async function listKnownWordForms(): Promise<KnownForm[]> {
     entry_id: row.entry_id,
     deck_name: row.deck_name,
   }));
-  // The dictionary lemma itself is always a known form, even when no
-  // inflection row spells it exactly.
+  // Include dictionary lemmas even when no inflection row spells them exactly.
   const seen = new Set(out.map((r) => r.form));
   const lemmas = await getDb().getAllAsync<any>(
     `SELECT e.id AS entry_id, e.lemma AS lemma, e.gloss AS gloss,
-            COALESCE(d.name, '') AS deck_name
+            d.name AS deck_name
       FROM entries e
-      LEFT JOIN cards c ON c.entry_id = e.id
-      LEFT JOIN decks d ON d.id = c.deck_id`,
+      JOIN cards c ON c.entry_id = e.id
+      JOIN decks d ON d.id = c.deck_id`,
   );
   for (const row of lemmas) {
     const form = normalizeRussian(stripAccents(String(row.lemma)));
@@ -1161,7 +1207,7 @@ export async function listKnownWordForms(): Promise<KnownForm[]> {
       lemma: String(row.lemma),
       gloss: String(row.gloss),
       entry_id: String(row.entry_id),
-      deck_name: String(row.deck_name ?? ''),
+      deck_name: String(row.deck_name),
     });
   }
   return out;
@@ -1262,8 +1308,8 @@ export async function importDeckPayload(
         `INSERT INTO cards (
           id, deck_id, entry_id, card_type, front, back,
           due, stability, difficulty, elapsed_days, scheduled_days, learning_steps,
-          reps, lapses, state, last_review, review_face, review_history, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          reps, lapses, state, mastery_tier, quiz_due, last_review, review_face, review_history, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         newCardId,
         deck.id,
         entryId,
@@ -1279,6 +1325,8 @@ export async function importDeckPayload(
         card.reps ?? 0,
         card.lapses ?? 0,
         card.state ?? 0,
+        card.mastery_tier ?? 0,
+        card.quiz_due || card.due || now,
         card.last_review ?? null,
         1,
         '[]',
@@ -1475,8 +1523,8 @@ export async function restoreBackup(payload: BackupPayload): Promise<void> {
         `INSERT INTO cards (
           id, deck_id, entry_id, card_type, front, back,
           due, stability, difficulty, elapsed_days, scheduled_days, learning_steps,
-          reps, lapses, state, last_review, review_face, review_history, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          reps, lapses, state, mastery_tier, quiz_due, last_review, review_face, review_history, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         card.id,
         card.deck_id,
         card.entry_id,
@@ -1492,6 +1540,8 @@ export async function restoreBackup(payload: BackupPayload): Promise<void> {
         card.reps,
         card.lapses,
         card.state,
+        card.mastery_tier ?? 0,
+        card.quiz_due ?? card.due,
         card.last_review,
         reviewFace,
         JSON.stringify(reviewHistory),

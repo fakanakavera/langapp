@@ -291,6 +291,8 @@ export function csvToBackupPayload(
         reps: 0,
         lapses: 0,
         state: 0,
+        mastery_tier: 0,
+        quiz_due: nowIso,
         last_review: null,
         review_face: 1,
         review_history: [],

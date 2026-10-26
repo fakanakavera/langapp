@@ -53,6 +53,8 @@ CREATE TABLE IF NOT EXISTS cards (
   reps INTEGER NOT NULL,
   lapses INTEGER NOT NULL,
   state INTEGER NOT NULL,
+  mastery_tier INTEGER NOT NULL DEFAULT 0,
+  quiz_due TEXT NOT NULL DEFAULT '',
   last_review TEXT,
   review_face INTEGER NOT NULL DEFAULT 1,
   review_history TEXT NOT NULL DEFAULT '[]',

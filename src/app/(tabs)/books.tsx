@@ -12,8 +12,8 @@ import {
   createBook,
   deleteBook,
   listBookUnknownForms,
+  listBookWordForms,
   listBooks,
-  listKnownWordForms,
 } from '@/db/queries';
 import type { BookSummary, BookUnknownForm, KnownForm } from '@/db/queries';
 import { calculateBookProgress, normalizeBookWord } from '@/lib/book-text';
@@ -32,7 +32,7 @@ export default function BooksScreen() {
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
-      Promise.all([listBooks(), listKnownWordForms(), listBookUnknownForms()]).then(
+      Promise.all([listBooks(), listBookWordForms(), listBookUnknownForms()]).then(
         ([rows, forms, unknown]) => {
           if (cancelled) return;
           setBooks(rows);
@@ -164,7 +164,7 @@ export default function BooksScreen() {
                   marked unknown
                 </ThemedText>
                 <ThemedText type="small">
-                  Known: {knownPercent}% ({progress?.knownWords ?? 0} words)
+                  In decks: {knownPercent}% ({progress?.knownWords ?? 0} words)
                 </ThemedText>
                 <ThemedText type="small" themeColor="textSecondary">
                   In Russian: {russianPercent}% · translated: {translatedPercent}%

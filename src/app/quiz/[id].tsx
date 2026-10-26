@@ -1,6 +1,6 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
-import { Pressable, StyleSheet, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, View } from 'react-native';
 
 import { CardBlock } from '@/components/card-block';
 import { Screen } from '@/components/screen';
@@ -9,7 +9,7 @@ import { UiButton } from '@/components/ui-button';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useDatabase } from '@/providers/database-provider';
-import { getDeck, listDueCards, listEntriesForDeck, reviewCard } from '@/db/queries';
+import { getDeck, listEntriesForDeck, listQuizDueCards, reviewCard } from '@/db/queries';
 import type { Deck, DueCard, FaceResponse } from '@/db/types';
 import type { DeckEntry } from '@/db/queries';
 import { pickDistractorGlosses, createAiSession, closeAiSession } from '@/lib/distractors';
@@ -70,13 +70,11 @@ function elapsedSince(shownAt: { current: number }): number {
 const DONT_KNOW_OPTION: QuizOption = { gloss: '\0dont_know' };
 
 /**
- * Multiple-choice drill over the deck's DUE cards. A correct answer is
- * recorded exactly like face 1 "Know" (Easy), a wrong one like face 1
- * "Don't know" — each straight success stretches the next review on the
- * streak ladder, one miss resets it. Picking a wrong option also lapses the word
- * that option came from (confusion about both words); correctly-rejected
- * options earn nothing. Quiz progress lands in history, stats, known
- * words, and scheduling like a normal review.
+ * Multiple-choice drill over the deck's due cards. A correct answer is
+ * recorded like face 1 "Know" (Easy); a wrong one is "Don't know" (Again).
+ * Correct answers raise quiz mastery by one tier; misses demote by two and
+ * bring the word due again in about a minute. Tier 10 waits 90 days after a
+ * correct answer. Picking a wrong option also demotes the confused word.
  */
 export default function QuizScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -99,13 +97,14 @@ export default function QuizScreen() {
   const cacheRef = useRef<Record<string, QuizOption[]>>({});
   const firstLoadRef = useRef<boolean>(false);
   const mountedRef = useRef<boolean>(false);
+  const completedThisSessionRef = useRef<Set<string>>(new Set());
 
   // Mirror the queue for background pre-generation (refs stay out of render).
   useEffect(() => {
     queueRef.current = queue;
   });
 
-  // Load deck + due queue + distractor pool. Re-runs on global refresh so
+  // Load deck + quiz-due queue + distractor pool. Re-runs on global refresh so
   // the queue stays in sync (answered cards drop out via rescheduling).
   useEffect(() => {
     if (!id) return;
@@ -113,12 +112,12 @@ export default function QuizScreen() {
     (async () => {
       const [nextDeck, due, deckEntries] = await Promise.all([
         getDeck(id),
-        listDueCards(id),
+        listQuizDueCards(id),
         listEntriesForDeck(id),
       ]);
       if (cancelled) return;
       setDeck(nextDeck);
-      setQueue(due);
+      setQueue(due.filter((card) => !completedThisSessionRef.current.has(card.id)));
       setEntries(deckEntries);
       if (!firstLoadRef.current) {
         firstLoadRef.current = true;
@@ -245,17 +244,32 @@ export default function QuizScreen() {
             source: 'quiz-distractor' as const,
           }
         : undefined;
-    void reviewCard(done, history, { source: 'quiz', distractor });
+    const review = reviewCard(done, history, { source: 'quiz', distractor }).then(
+      (updated) => ({ updated, error: null }),
+      (error: unknown) => ({ updated: null, error }),
+    );
     advanceTimer.current = setTimeout(() => {
       if (!mountedRef.current) return;
-      setPicked(null);
-      // A miss cycles to the back for an immediate re-drill (DB due is
-      // ~1 min, so it also survives a reload).
-      setQueue((cards) => {
-        const rest = cards.filter((c) => c.id !== done.id);
-        return correct ? rest : [...rest, done];
-      });
-      refresh();
+      void review
+        .then((result) => {
+          if (!mountedRef.current) return;
+          if (!result.updated) {
+            setPicked(null);
+            Alert.alert(
+              'Could not save quiz answer',
+              result.error instanceof Error ? result.error.message : String(result.error),
+            );
+            return;
+          }
+          setPicked(null);
+          if (correct) completedThisSessionRef.current.add(done.id);
+          // Keep persisted mastery and FSRS values if the card is retried.
+          setQueue((cards) => {
+            const rest = cards.filter((c) => c.id !== done.id);
+            return correct ? rest : [...rest, { ...done, ...result.updated }];
+          });
+          refresh();
+        });
     }, 900);
   }
 
@@ -272,12 +286,30 @@ export default function QuizScreen() {
     const done = current;
     setPicked(DONT_KNOW_OPTION);
     // Recorded as "Don't know" so a lucky guess can never count as known.
-    void reviewCard(done, history, { source: 'quiz' });
+    const review = reviewCard(done, history, { source: 'quiz' }).then(
+      (updated) => ({ updated, error: null }),
+      (error: unknown) => ({ updated: null, error }),
+    );
     advanceTimer.current = setTimeout(() => {
       if (!mountedRef.current) return;
-      setPicked(null);
-      setQueue((cards) => [...cards.filter((c) => c.id !== done.id), done]);
-      refresh();
+      void review
+        .then((result) => {
+          if (!mountedRef.current) return;
+          if (!result.updated) {
+            setPicked(null);
+            Alert.alert(
+              'Could not save quiz answer',
+              result.error instanceof Error ? result.error.message : String(result.error),
+            );
+            return;
+          }
+          setPicked(null);
+          setQueue((cards) => [
+            ...cards.filter((c) => c.id !== done.id),
+            { ...done, ...result.updated },
+          ]);
+          refresh();
+        });
     }, 900);
   }
 
@@ -326,6 +358,9 @@ export default function QuizScreen() {
           {spokenFront}
         </ThemedText>
       </Pressable>
+      <ThemedText type="small" themeColor="textSecondary" style={styles.counter}>
+        Quiz mastery: Tier {current.mastery_tier} / 10
+      </ThemedText>
       {!options ? (
         <ThemedText themeColor="textSecondary" style={styles.wordText}>
           Preparing options…

@@ -8,7 +8,7 @@ import { UiButton } from '@/components/ui-button';
 import { Spacing } from '@/constants/theme';
 import {
   getBook,
-  listKnownWordForms,
+  listBookWordForms,
   listUnknownWords,
   toggleUnknownWord,
   type KnownForm,
@@ -30,10 +30,8 @@ import { useDatabase } from '@/providers/database-provider';
 const PARAGRAPHS_PER_PAGE = 8;
 
 /**
- * Book reader: tap any Russian word to mark it unknown (highlighted).
- * Words already in your decks show tinted — tapping them reveals the
- * meaning, the deck, and a link to the word. Marked words collect on the
- * "Unknown words" screen for deck creation or AI export.
+ * Words in any deck stay Russian; words outside decks are translated where
+ * a gloss is available. Tapping a deck word reveals its meaning and link.
  */
 export default function BookScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -44,10 +42,10 @@ export default function BookScreen() {
   const [loaded, setLoaded] = useState(false);
   const [page, setPage] = useState(0);
   const [known, setKnown] = useState<Map<string, KnownForm>>(new Map());
+  const [deckForms, setDeckForms] = useState<Set<string>>(new Set());
   const [marks, setMarks] = useState<Set<string>>(new Set());
   const [playing, setPlaying] = useState(false);
   const playbackRef = useRef<MixedPlayback | null>(null);
-  const knownForms = useMemo(() => new Set([...known.keys()]), [known]);
 
   function stopListening() {
     playbackRef.current?.stop();
@@ -59,7 +57,7 @@ export default function BookScreen() {
     useCallback(() => {
       if (typeof id !== 'string') return;
       let cancelled = false;
-      Promise.all([getBook(id), listKnownWordForms(), listUnknownWords(id)]).then(
+      Promise.all([getBook(id), listBookWordForms(), listUnknownWords(id)]).then(
         ([nextBook, forms, unknown]) => {
           if (cancelled) return;
           setBook(nextBook);
@@ -69,6 +67,7 @@ export default function BookScreen() {
             if (!map.has(normalized)) map.set(normalized, form);
           }
           setKnown(map);
+          setDeckForms(new Set(map.keys()));
           setMarks(new Set(unknown.map((w) => w.normalized)));
           setLoaded(true);
         },
@@ -136,11 +135,9 @@ export default function BookScreen() {
     });
     refresh();
 
-    // When a word is newly marked unknown, show a literal (bad) translation
-    // of its sentence. Words already in a deck stay in Russian by design.
+    // Leave words already covered by a deck in Russian in the sentence translation.
     if (marked) {
-      const knownForms = new Set(known.keys());
-      const translation = literalTranslate(context, { known: knownForms });
+      const translation = literalTranslate(context, { known: deckForms });
       Alert.alert(surface, translation, [{ text: 'OK', style: 'cancel' }]);
     }
   }
@@ -215,7 +212,7 @@ export default function BookScreen() {
                 return <Text key={tokenIndex}>{token.text}</Text>;
               }
         const normalized = normalizeBookWord(token.text);
-        const visibility = classifyBookWord(token.text, knownForms, marks);
+        const visibility = classifyBookWord(token.text, deckForms, marks);
         const isMarked = marks.has(normalized);
         const isKnown = visibility === 'known';
 

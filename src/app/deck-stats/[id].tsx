@@ -11,7 +11,11 @@ import { getDeck, getDeckStats, listLeechCards, makeCardsDueNow, resetDeckStats 
 import type { DeckStats, LeechCard } from '@/db/queries';
 import type { Deck } from '@/db/types';
 import { formatDuration } from '@/lib/dates';
-import { useTheme } from '@/hooks/use-theme';
+import {
+  masteryIntervalLabel,
+  MASTERY_TIER_COLORS,
+  MAX_MASTERY_TIER,
+} from '@/lib/mastery';
 import { useDatabase } from '@/providers/database-provider';
 
 function percent(part: number, whole: number): string {
@@ -30,20 +34,12 @@ function leechReason(leech: LeechCard): string {
 export default function DeckStatsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const theme = useTheme();
   const { revision, refresh } = useDatabase();
   const [deck, setDeck] = useState<Deck | null>(null);
   const [stats, setStats] = useState<DeckStats | null>(null);
   const [leeches, setLeeches] = useState<LeechCard[]>([]);
   const [drilling, setDrilling] = useState(false);
   const [resetting, setResetting] = useState(false);
-  const tierColors = {
-    new: theme.textSecondary,
-    learning: '#E6A23C',
-    review: '#2EAD68',
-    relearning: theme.error,
-  };
-
   useFocusEffect(
     useCallback(() => {
       if (!id) return;
@@ -78,7 +74,7 @@ export default function DeckStatsScreen() {
     if (typeof id !== 'string') return;
     Alert.alert(
       'Reset all stats?',
-      `All review history, study time, and trouble-word data for "${deck?.name ?? 'Deck'}" are deleted, and every card goes back to new (all due now). Words and examples are kept.`,
+      `All review history, study time, and quiz mastery for "${deck?.name ?? 'Deck'}" are reset, and every card goes back to new (all due now). Words and examples are kept.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -101,16 +97,13 @@ export default function DeckStatsScreen() {
     );
   }
 
-  const tierTotal = stats
-    ? Object.values(stats.wordTiers).reduce((total, count) => total + count, 0)
-    : 0;
+  const tierTotal = stats ? stats.masteryTiers.reduce((total, count) => total + count, 0) : 0;
   const tierSegments: PieChartSegment[] = stats
-    ? [
-        { label: 'New', value: stats.wordTiers.new, color: tierColors.new },
-        { label: 'Learning', value: stats.wordTiers.learning, color: tierColors.learning },
-        { label: 'Known', value: stats.wordTiers.review, color: tierColors.review },
-        { label: 'Relearning', value: stats.wordTiers.relearning, color: tierColors.relearning },
-      ]
+    ? stats.masteryTiers.map((value, tier) => ({
+        label: `Tier ${tier}`,
+        value,
+        color: MASTERY_TIER_COLORS[tier],
+      }))
     : [];
 
   return (
@@ -118,20 +111,25 @@ export default function DeckStatsScreen() {
       <ThemedText type="subtitle">{deck?.name ?? 'Deck'} stats</ThemedText>
 
       <CardBlock>
-        <ThemedText type="smallBold">Words by learning tier</ThemedText>
+        <ThemedText type="smallBold">Words by quiz mastery</ThemedText>
         <ThemedText type="small" themeColor="textSecondary">
-          {stats?.wordTiers.review ?? 0} known of {tierTotal} words (
-          {percent(stats?.wordTiers.review ?? 0, tierTotal)})
+          {stats?.masteryTiers[MAX_MASTERY_TIER] ?? 0} mastered of {tierTotal} words (
+          {percent(stats?.masteryTiers[MAX_MASTERY_TIER] ?? 0, tierTotal)})
         </ThemedText>
         <PieChart segments={tierSegments} />
-        {tierSegments.map((segment) => (
-          <ThemedText key={segment.label} type="small">
-            <ThemedText style={{ color: segment.color }}>● </ThemedText>
-            {segment.label}: {segment.value} ({percent(segment.value, tierTotal)})
+        {stats?.masteryTiers.map((value, tier) => (
+          <ThemedText key={tier} type="small">
+            <ThemedText style={{ color: MASTERY_TIER_COLORS[tier] }}>● </ThemedText>
+            Tier {tier}: {value} ({percent(value, tierTotal)}) ·{' '}
+            {tier === 0
+            ? 'new / available now'
+            : masteryIntervalLabel(tier)}
           </ThemedText>
         ))}
         <ThemedText type="small" themeColor="textSecondary">
-          Each word is counted once at its most advanced current card state.
+          A correct multiple-choice answer moves a word up one tier. A miss drops it two tiers.
+          Tiers 1–3 have no cooldown, and Tier 4 waits 6 hours. Ten correct answers reach Tier 10,
+          which returns to quiz after 90 days.
         </ThemedText>
       </CardBlock>
 

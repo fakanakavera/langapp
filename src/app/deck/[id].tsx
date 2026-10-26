@@ -159,7 +159,7 @@ export default function DeckScreen() {
     if (typeof id !== 'string' || total === 0) return;
     Alert.alert(
       'Reset all stats?',
-      `"${deck?.name ?? 'Deck'}": ${total} cards go back to new (all due now), and all review history, study time, and trouble-word data for this deck are deleted. Words and examples are kept.`,
+      `"${deck?.name ?? 'Deck'}": ${total} cards go back to new (all due now), quiz mastery resets to Tier 0, and all review history, study time, and trouble-word data for this deck are deleted. Words and examples are kept.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {

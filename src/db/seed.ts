@@ -68,8 +68,8 @@ export async function seedIfNeeded(db: SQLiteDatabase): Promise<void> {
         `INSERT INTO cards (
           id, deck_id, entry_id, card_type, front, back,
           due, stability, difficulty, elapsed_days, scheduled_days, learning_steps,
-          reps, lapses, state, last_review, review_face, review_history, created_at
-        ) VALUES (?, ?, ?, 'recognition', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+          reps, lapses, state, mastery_tier, quiz_due, last_review, review_face, review_history, created_at
+        ) VALUES (?, ?, ?, 'recognition', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, ?, ?, ?)`,
         createId(),
         deckId,
         entryId,
@@ -84,6 +84,7 @@ export async function seedIfNeeded(db: SQLiteDatabase): Promise<void> {
         fsrs.reps,
         fsrs.lapses,
         fsrs.state,
+        fsrs.due.toISOString(),
         1,
         '[]',
         createdAt,

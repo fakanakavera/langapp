@@ -2,6 +2,11 @@ import * as SQLite from 'expo-sqlite';
 
 import { SCHEMA_SQL } from '@/db/schema';
 import { seedIfNeeded } from '@/db/seed';
+import {
+  MASTERY_FREE_REVIEW_TIER,
+  masteryIntervalMs,
+  masteryTierAfterQuiz,
+} from '@/lib/mastery';
 
 let database: SQLite.SQLiteDatabase | null = null;
 let initPromise: Promise<SQLite.SQLiteDatabase> | null = null;
@@ -11,6 +16,8 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
     "PRAGMA table_info(cards)"
   );
   const cardColumns = new Set(cards.map((c) => c.name));
+  const needsMasteryBackfill = !cardColumns.has('mastery_tier');
+  const needsQuizDueBackfill = !cardColumns.has('quiz_due');
 
   if (!cardColumns.has('review_face')) {
     await db.execAsync(`
@@ -22,7 +29,6 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
       ALTER TABLE cards ADD COLUMN review_history TEXT NOT NULL DEFAULT '[]';
     `);
   }
-
   const reviews = await db.getAllAsync<{ name: string }>(
     "PRAGMA table_info(reviews)"
   );
@@ -32,6 +38,141 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
     await db.execAsync(`
       ALTER TABLE reviews ADD COLUMN faces TEXT NOT NULL DEFAULT '[]';
     `);
+  }
+  if (needsMasteryBackfill || needsQuizDueBackfill) {
+    await db.withTransactionAsync(async () => {
+      if (needsMasteryBackfill) {
+        await db.execAsync(`
+          ALTER TABLE cards ADD COLUMN mastery_tier INTEGER NOT NULL DEFAULT 0;
+        `);
+      }
+      if (needsQuizDueBackfill) {
+        await db.execAsync(`
+          ALTER TABLE cards ADD COLUMN quiz_due TEXT NOT NULL DEFAULT '';
+        `);
+        await db.execAsync("UPDATE cards SET quiz_due = due WHERE quiz_due = ''");
+      }
+      const rows = needsMasteryBackfill
+        ? await db.getAllAsync<{ card_id: string; faces: string; reviewed_at: string }>(
+            `SELECT r.card_id, r.faces, r.reviewed_at
+             FROM reviews r
+             ORDER BY r.reviewed_at ASC`,
+          )
+        : [];
+      const tiers = new Map<string, number>();
+      const lastQuizReviews = new Map<string, { reviewedAt: string; correct: boolean }>();
+      for (const row of rows) {
+        let faces: unknown;
+        try {
+          faces = JSON.parse(row.faces);
+        } catch {
+          continue;
+        }
+        if (!Array.isArray(faces)) continue;
+        for (const face of faces) {
+          if (face?.source === 'quiz' && face.face === 1) {
+            const correct = face.response === 'know';
+            tiers.set(
+              row.card_id,
+              masteryTierAfterQuiz(tiers.get(row.card_id) ?? 0, correct),
+            );
+            lastQuizReviews.set(row.card_id, { reviewedAt: row.reviewed_at, correct });
+          } else if (face?.source === 'quiz-distractor') {
+            tiers.set(
+              row.card_id,
+              masteryTierAfterQuiz(tiers.get(row.card_id) ?? 0, false),
+            );
+            lastQuizReviews.set(row.card_id, { reviewedAt: row.reviewed_at, correct: false });
+          }
+        }
+      }
+      for (const [cardId, lastReview] of lastQuizReviews) {
+        const tier = tiers.get(cardId) ?? 0;
+        const delay = lastReview.correct
+          ? masteryIntervalMs(tier)
+          : tier <= MASTERY_FREE_REVIEW_TIER ? 0 : 60_000;
+        const reviewedAt = new Date(lastReview.reviewedAt).getTime();
+        const quizDue = Number.isFinite(reviewedAt)
+          ? new Date(reviewedAt + delay).toISOString()
+          : undefined;
+        if (needsMasteryBackfill && quizDue) {
+          await db.runAsync(
+            'UPDATE cards SET mastery_tier = ?, quiz_due = ? WHERE id = ?',
+            tier,
+            quizDue,
+            cardId,
+          );
+        } else if (needsMasteryBackfill) {
+          await db.runAsync('UPDATE cards SET mastery_tier = ? WHERE id = ?', tier, cardId);
+        } else if (quizDue) {
+          await db.runAsync('UPDATE cards SET quiz_due = ? WHERE id = ?', quizDue, cardId);
+        }
+      }
+    });
+  }
+
+  const scheduleVersion = await db.getFirstAsync<{ value: string }>(
+    "SELECT value FROM meta WHERE key = 'quiz_schedule_version'",
+  );
+  if (scheduleVersion?.value !== '2') {
+    const rows = await db.getAllAsync<{
+      card_id: string;
+      faces: string;
+      reviewed_at: string;
+    }>(
+      `SELECT r.card_id, r.faces, r.reviewed_at
+       FROM reviews r
+       ORDER BY r.reviewed_at DESC`,
+    );
+    const latestQuizReview = new Map<string, { reviewedAt: string; correct: boolean }>();
+    for (const row of rows) {
+      if (latestQuizReview.has(row.card_id)) continue;
+      let faces: unknown;
+      try {
+        faces = JSON.parse(row.faces);
+      } catch {
+        continue;
+      }
+      if (!Array.isArray(faces)) continue;
+      const quizFace = faces.find(
+        (face) =>
+          (face?.source === 'quiz' && face.face === 1) ||
+          face?.source === 'quiz-distractor',
+      );
+      if (quizFace) {
+        latestQuizReview.set(row.card_id, {
+          reviewedAt: row.reviewed_at,
+          correct: quizFace.source === 'quiz' && quizFace.response === 'know',
+        });
+      }
+    }
+    await db.withTransactionAsync(async () => {
+      const cards = await db.getAllAsync<{ id: string; mastery_tier: number }>(
+        'SELECT id, mastery_tier FROM cards',
+      );
+      const now = new Date();
+      for (const card of cards) {
+        const tier = Math.max(0, Math.min(10, Math.trunc(card.mastery_tier)));
+        const latest = latestQuizReview.get(card.id);
+        if (tier <= MASTERY_FREE_REVIEW_TIER) {
+          await db.runAsync('UPDATE cards SET quiz_due = ? WHERE id = ?', now.toISOString(), card.id);
+        } else if (latest) {
+          const reviewedAt = new Date(latest.reviewedAt).getTime();
+          if (!Number.isFinite(reviewedAt)) continue;
+          const delay = latest.correct
+            ? masteryIntervalMs(tier)
+            : 60_000;
+          await db.runAsync(
+            'UPDATE cards SET quiz_due = ? WHERE id = ?',
+            new Date(reviewedAt + delay).toISOString(),
+            card.id,
+          );
+        }
+      }
+      await db.runAsync(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('quiz_schedule_version', '2')",
+      );
+    });
   }
 
   const examples = await db.getAllAsync<{ name: string }>(
