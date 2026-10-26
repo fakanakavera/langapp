@@ -1,40 +1,83 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
-import type { Grade } from 'ts-fsrs';
+import { useEffect, useMemo, useState } from 'react';
+import { StyleSheet } from 'react-native';
 
-import { CardBlock } from '@/components/card-block';
+import { MultiFaceCard } from '@/components/multi-face-card';
 import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
 import { UiButton } from '@/components/ui-button';
-import { Spacing } from '@/constants/theme';
-import { listDueCards, reviewCard } from '@/db/queries';
-import type { DueCard } from '@/db/types';
+import { listDueCards, listExamples, listKnownWords, mapFaceResponsesToRating, reviewCard } from '@/db/queries';
+import type { DueCard, FaceResponse } from '@/db/types';
+import { Rating } from '@/srs/scheduler';
+import { buildHintPhrase, type KnownWord } from '@/lib/hint-phrase';
 import { useDatabase } from '@/providers/database-provider';
-import { RATING_LABELS } from '@/srs/scheduler';
 
 export default function ReviewScreen() {
   const { deckId } = useLocalSearchParams<{ deckId?: string }>();
   const router = useRouter();
-  const { refresh } = useDatabase();
+  const { refresh, revision } = useDatabase();
   const [queue, setQueue] = useState<DueCard[]>([]);
-  const [revealed, setRevealed] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [phraseTranslation, setPhraseTranslation] = useState('');
+  const [exampleHint, setExampleHint] = useState('');
+  const [knownWords, setKnownWords] = useState<KnownWord[]>([]);
 
   useEffect(() => {
     listDueCards(deckId).then((cards) => {
       setQueue(cards);
       setLoaded(true);
     });
-  }, [deckId]);
+    listKnownWords().then(setKnownWords);
+  }, [deckId, revision]);
 
   const current = queue[0];
+  const currentId = current?.id;
+  const currentEntryId = current?.entry_id;
+  const currentFront = current?.front ?? '';
 
-  async function onGrade(rating: Grade) {
+  // Face-2 hint: English context with the target word — and every
+  // already-known word — shown in Russian.
+  const hint = useMemo(
+    () =>
+      current
+        ? buildHintPhrase(current.front, current.back, phraseTranslation, knownWords, exampleHint)
+        : '',
+    [current, phraseTranslation, knownWords, exampleHint],
+  );
+
+  // Load the example phrase for the current card. Depends on stable ids —
+  // not the `current` object identity — so re-renders don't refetch in a loop.
+  useEffect(() => {
+    if (!currentId || !currentEntryId) return;
+    let cancelled = false;
+    listExamples(currentEntryId).then((examples) => {
+      if (cancelled) return;
+      if (examples.length > 0) {
+        setPhraseTranslation(examples[0].translation);
+        setExampleHint(examples[0].hint ?? '');
+      } else {
+        setPhraseTranslation(`Translation for ${currentFront}`);
+        setExampleHint('');
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentId, currentEntryId, currentFront]);
+
+  async function onComplete(history: FaceResponse[]) {
     if (!current) return;
-    await reviewCard(current, rating);
-    setRevealed(false);
-    setQueue((cards) => cards.slice(1));
+    const completedId = current.id;
+    const missed = mapFaceResponsesToRating(history) === Rating.Again;
+    // Advance immediately so the next card mounts fresh at face 1,
+    // then persist + refresh in the background. A miss cycles to the
+    // back of the queue for an immediate re-drill (DB due is ~1 min,
+    // so it also survives a reload).
+    setQueue((cards) => {
+      const rest = cards.filter((c) => c.id !== completedId);
+      return missed ? [...rest, current] : rest;
+    });
+    await reviewCard(current, history, { source: 'review' });
     refresh();
   }
 
@@ -58,45 +101,22 @@ export default function ReviewScreen() {
 
   return (
     <Screen>
-      <ThemedText type="small" themeColor="textSecondary">
+      <ThemedText type="small" themeColor="textSecondary" style={styles.counter}>
         {queue.length} left · {current.deck_name}
       </ThemedText>
-      <CardBlock>
-        <ThemedText type="subtitle">{current.front}</ThemedText>
-        {revealed ? (
-          <ThemedText>{current.back}</ThemedText>
-        ) : (
-          <ThemedText themeColor="textSecondary">Tap reveal when you have an answer.</ThemedText>
-        )}
-      </CardBlock>
-
-      {!revealed ? (
-        <UiButton label="Reveal" onPress={() => setRevealed(true)} />
-      ) : (
-        <View style={styles.grades}>
-          {RATING_LABELS.map((item) => (
-            <View key={item.rating} style={styles.grade}>
-              <UiButton
-                label={item.label}
-                variant={item.rating === 3 ? 'primary' : 'secondary'}
-                onPress={() => onGrade(item.rating)}
-              />
-            </View>
-          ))}
-        </View>
-      )}
+      <MultiFaceCard
+        key={current.id}
+        card={current}
+        hint={hint}
+        onComplete={onComplete}
+      />
     </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  grades: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: Spacing.two,
-  },
-  grade: {
-    flexGrow: 1,
-    minWidth: '45%',
+  counter: {
+    marginBottom: 16,
+    textAlign: 'center',
   },
 });

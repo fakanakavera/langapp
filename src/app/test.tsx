@@ -1,10 +1,10 @@
-import { StyleSheet, Text, View } from 'react-native';
+import { StyleSheet } from 'react-native';
 import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
 
 export default function TestScreen() {
   return (
-    <Screen style={styles.container}>
+    <Screen>
       <ThemedText type="title" style={styles.title}>
         Hello World 👋
       </ThemedText>
@@ -16,16 +16,13 @@ export default function TestScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
   title: {
     fontSize: 32,
     marginBottom: 16,
+    textAlign: 'center',
   },
   subtitle: {
     fontSize: 18,
+    textAlign: 'center',
   },
 });

@@ -39,6 +39,24 @@ export default function AppTabs() {
         />
       </NativeTabs.Trigger>
 
+      <NativeTabs.Trigger name="books">
+        <NativeTabs.Trigger.Label>Books</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon
+          sf="book"
+          src={require('@/assets/images/tabIcons/explore.png')}
+          renderingMode="template"
+        />
+      </NativeTabs.Trigger>
+
+      <NativeTabs.Trigger name="import-dictionary">
+        <NativeTabs.Trigger.Label>Dictionary</NativeTabs.Trigger.Label>
+        <NativeTabs.Trigger.Icon
+          sf="text.alignleft"
+          src={require('@/assets/images/tabIcons/explore.png')}
+          renderingMode="template"
+        />
+      </NativeTabs.Trigger>
+
       <NativeTabs.Trigger name="settings">
         <NativeTabs.Trigger.Label>Settings</NativeTabs.Trigger.Label>
         <NativeTabs.Trigger.Icon

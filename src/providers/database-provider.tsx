@@ -4,6 +4,7 @@ import { ActivityIndicator, StyleSheet } from 'react-native';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { initDatabase } from '@/db/client';
+import { repairInflatedIntervals } from '@/db/queries';
 import { Spacing } from '@/constants/theme';
 
 type DatabaseContextValue = {
@@ -21,6 +22,7 @@ export function DatabaseProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     initDatabase()
+      .then(() => repairInflatedIntervals())
       .then(() => setReady(true))
       .catch((caught) => setError(caught instanceof Error ? caught.message : String(caught)));
   }, []);

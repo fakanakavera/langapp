@@ -9,9 +9,9 @@ export async function seedIfNeeded(db: SQLiteDatabase): Promise<void> {
   const row = await db.getFirstAsync<{ value: string }>('SELECT value FROM meta WHERE key = ?', [
     'seeded',
   ]);
-  if (row?.value === '1') return;
-
   const createdAt = nowIso();
+
+  if (row?.value !== '1') {
   const deckId = createId();
   const fsrs = emptyFsrsCard(new Date(createdAt));
 
@@ -68,8 +68,8 @@ export async function seedIfNeeded(db: SQLiteDatabase): Promise<void> {
         `INSERT INTO cards (
           id, deck_id, entry_id, card_type, front, back,
           due, stability, difficulty, elapsed_days, scheduled_days, learning_steps,
-          reps, lapses, state, last_review, created_at
-        ) VALUES (?, ?, ?, 'recognition', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+          reps, lapses, state, last_review, review_face, review_history, created_at
+        ) VALUES (?, ?, ?, 'recognition', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
         createId(),
         deckId,
         entryId,
@@ -84,6 +84,8 @@ export async function seedIfNeeded(db: SQLiteDatabase): Promise<void> {
         fsrs.reps,
         fsrs.lapses,
         fsrs.state,
+        1,
+        '[]',
         createdAt,
       );
     }
@@ -91,4 +93,26 @@ export async function seedIfNeeded(db: SQLiteDatabase): Promise<void> {
     await db.runAsync('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', 'seeded', '1');
     await db.runAsync('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', 'schema_version', '1');
   });
+  }
+
+  // Reader sample book (user-provided text). Seeded once: later launches
+  // keep the user's books, marks, and deletions untouched.
+  const bookCount =
+    (await db.getFirstAsync<{ n: number }>('SELECT COUNT(*) AS n FROM books'))?.n ?? 0;
+  if (bookCount === 0) {
+    try {
+      const { SAMPLE_BOOK_TITLE, SAMPLE_BOOK_BODY } = await import('@/data/sample-book');
+      if (SAMPLE_BOOK_BODY.trim()) {
+        await db.runAsync(
+          'INSERT INTO books (id, title, body, created_at) VALUES (?, ?, ?, ?)',
+          createId(),
+          SAMPLE_BOOK_TITLE,
+          SAMPLE_BOOK_BODY,
+          createdAt,
+        );
+      }
+    } catch {
+      // A missing/unreadable sample must never block first launch.
+    }
+  }
 }

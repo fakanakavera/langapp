@@ -1,4 +1,4 @@
-import { Pressable, StyleSheet } from 'react-native';
+import { Pressable, StyleSheet, ViewStyle } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
 import { Spacing } from '@/constants/theme';
@@ -9,9 +9,10 @@ type UiButtonProps = {
   onPress: () => void;
   variant?: 'primary' | 'secondary';
   disabled?: boolean;
+  style?: ViewStyle;
 };
 
-export function UiButton({ label, onPress, variant = 'primary', disabled }: UiButtonProps) {
+export function UiButton({ label, onPress, variant = 'primary', disabled, style }: UiButtonProps) {
   const theme = useTheme();
   const backgroundColor = variant === 'primary' ? theme.tint : theme.backgroundElement;
   const color = variant === 'primary' ? '#ffffff' : theme.text;
@@ -23,6 +24,7 @@ export function UiButton({ label, onPress, variant = 'primary', disabled }: UiBu
       style={({ pressed }) => [
         styles.button,
         { backgroundColor, opacity: disabled ? 0.45 : pressed ? 0.8 : 1 },
+        style,
       ]}>
       <ThemedText style={[styles.label, { color }]}>{label}</ThemedText>
     </Pressable>
@@ -35,8 +37,10 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.two + 2,
     paddingHorizontal: Spacing.three,
     alignItems: 'center',
+    justifyContent: 'center',
   },
   label: {
     fontWeight: 600,
+    textAlign: 'center',
   },
 });

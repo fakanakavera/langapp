@@ -25,6 +25,23 @@ export type Inflection = {
 
 export type CardType = 'recognition' | 'production';
 
+export type ReviewFace = 1 | 2 | 3;
+
+/** Which graded feature produced a review. Distractor lapses reuse the
+ *  base mode with a -distractor suffix so stats can tell them apart. */
+export type ReviewSource =
+  | 'review'
+  | 'quiz'
+  | 'judge'
+  | 'cases'
+  | 'quiz-distractor'
+  | 'judge-distractor';
+
+export type FaceResponse =
+  | { face: 1; response: 'know' | 'dont_know'; duration_ms?: number; source?: ReviewSource }
+  | { face: 2; response: 'know' | 'dont_know'; duration_ms?: number; source?: ReviewSource }
+  | { face: 3; response: 'no_idea' | 'vague_idea' | 'knew_confirm'; duration_ms?: number; source?: ReviewSource };
+
 export type CardRow = {
   id: string;
   deck_id: string;
@@ -42,6 +59,8 @@ export type CardRow = {
   lapses: number;
   state: number;
   last_review: string | null;
+  review_face: ReviewFace;
+  review_history: FaceResponse[];
   created_at: string;
 };
 
@@ -57,6 +76,8 @@ export type ReviewRow = {
   scheduled_days: number;
   learning_steps: number;
   reviewed_at: string;
+  /** Per-face trail of this review, in order (includes time-to-answer). */
+  faces: FaceResponse[];
 };
 
 export type Example = {
@@ -64,6 +85,8 @@ export type Example = {
   entry_id: string;
   text: string;
   translation: string;
+  /** Pre-authored face-2 hint (mostly English, target word in Russian). */
+  hint: string;
   source: 'user' | 'ai' | 'seed';
   created_at: string;
 };
@@ -72,6 +95,30 @@ export type DueCard = CardRow & {
   lemma: string;
   gloss: string;
   deck_name: string;
+};
+
+export type Book = {
+  id: string;
+  title: string;
+  body: string;
+  created_at: string;
+};
+
+export type UnknownWord = {
+  id: string;
+  book_id: string;
+  surface: string;
+  normalized: string;
+  lemma_guess: string;
+  context: string;
+  created_at: string;
+};
+
+export type UserDictionaryEntry = {
+  id: string;
+  lemma: string;
+  gloss: string;
+  created_at: string;
 };
 
 export type DeckSummary = Deck & {

@@ -168,3 +168,20 @@ export const RU_STARTER_DICTIONARY: StarterLemma[] = [
 export function normalizeRussian(input: string): string {
   return input.trim().toLocaleLowerCase('ru-RU').replaceAll('ё', 'е');
 }
+
+/**
+ * Strip Russian stress accents (combining grave U+0300 / acute U+0301).
+ * Only those two marks are removed, so yo (e plus diaeresis under NFD)
+ * always survives. "она́" -> "она".
+ */
+export function stripAccents(value: string): string {
+  return value
+    .normalize('NFD')
+    .split('')
+    .filter((ch) => {
+      const code = ch.charCodeAt(0);
+      return code !== 0x300 && code !== 0x301;
+    })
+    .join('')
+    .normalize('NFC');
+}
