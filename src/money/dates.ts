@@ -98,6 +98,53 @@ export function parseAmount(value: string, currency: string): number | null {
   return Number.isSafeInteger(amount) && amount > 0 ? amount : null;
 }
 
+/**
+ * Parses an amount expression like "3000-499" or "100+50+25" into minor units.
+ * Only + and - are supported, evaluated left to right. The result must be positive.
+ */
+export function parseAmountExpression(value: string, currency: string): number | null {
+  const normalized = value.trim().replace(',', '.').replace(/\s+/g, '');
+  if (!normalized) return null;
+
+  // Must start with a number and only contain digits, dots, +, -
+  if (!/^[\d.]+([+-][\d.]+)*$/.test(normalized)) return null;
+
+  const decimals = currencyDecimals(currency);
+  const tokens: (number | string)[] = [];
+  let current = '';
+  for (const char of normalized) {
+    if (char === '+' || char === '-') {
+      if (current === '') return null;
+      const num = Number(current);
+      if (Number.isNaN(num)) return null;
+      const [, fraction = ''] = String(num).split('.');
+      if (fraction.length > decimals) return null;
+      tokens.push(num);
+      current = '';
+      tokens.push(char);
+    } else {
+      current += char;
+    }
+  }
+  if (current === '') return null;
+  const lastNum = Number(current);
+  if (Number.isNaN(lastNum)) return null;
+  const [, lastFraction = ''] = String(lastNum).split('.');
+  if (lastFraction.length > decimals) return null;
+  tokens.push(lastNum);
+
+  // Evaluate left to right (+ and - share precedence)
+  let result = tokens[0] as number;
+  for (let i = 1; i < tokens.length; i += 2) {
+    const op = tokens[i] as string;
+    const next = tokens[i + 1] as number;
+    result = op === '+' ? result + next : result - next;
+  }
+
+  const amount = Math.round(result * 10 ** decimals);
+  return Number.isSafeInteger(amount) && amount > 0 ? amount : null;
+}
+
 export function formatMoney(amountMinor: number, currency: string): string {
   return new Intl.NumberFormat(undefined, {
     style: 'currency',

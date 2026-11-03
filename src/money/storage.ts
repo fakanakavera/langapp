@@ -4,6 +4,7 @@ import type {
   MoneyBudget,
   MoneyCategory,
   MoneyPreferences,
+  MoneySubcategory,
   MoneyTransaction,
   RecurringFrequency,
   RecurringRule,
@@ -51,21 +52,27 @@ export async function loadMoneyData(
   to: string,
 ): Promise<{
   categories: MoneyCategory[];
+  subcategories: MoneySubcategory[];
   transactions: MoneyTransaction[];
   recurring: RecurringRule[];
   budgets: MoneyBudget[];
   preferences: MoneyPreferences;
 }> {
   const db = getDb();
-  const [categories, transactions, recurring, budgets, settings] = await Promise.all([
+  const [categories, subcategories, transactions, recurring, budgets, settings] = await Promise.all([
     db.getAllAsync<MoneyCategory>(
       'SELECT id, type, name FROM money_categories ORDER BY type, name COLLATE NOCASE',
     ),
+    db.getAllAsync<MoneySubcategory>(
+      'SELECT id, category_id, name, amount_minor FROM money_subcategories ORDER BY category_id, name COLLATE NOCASE',
+    ),
     db.getAllAsync<MoneyTransaction>(
-      `SELECT t.id, t.type, t.category_id, c.name AS category_name, t.amount_minor,
+      `SELECT t.id, t.type, t.category_id, t.subcategory_id, c.name AS category_name,
+              s.name AS subcategory_name, t.amount_minor, t.quantity,
               t.description, t.occurred_at
        FROM money_transactions t
        LEFT JOIN money_categories c ON c.id = t.category_id
+       LEFT JOIN money_subcategories s ON s.id = t.subcategory_id
        WHERE t.occurred_at >= ? AND t.occurred_at <= ?
        ORDER BY t.occurred_at DESC, t.created_at DESC`,
       from,
@@ -88,6 +95,7 @@ export async function loadMoneyData(
   const values = new Map(settings.map(({ key, value }) => [key, value]));
   return {
     categories,
+    subcategories,
     transactions,
     recurring,
     budgets,
@@ -101,18 +109,22 @@ export async function loadMoneyData(
 export async function saveTransaction(input: {
   type: TransactionType;
   categoryId: string | null;
+  subcategoryId: string | null;
   amountMinor: number;
+  quantity: number;
   description: string;
   occurredAt: string;
 }): Promise<void> {
   await getDb().runAsync(
     `INSERT INTO money_transactions
-      (id, type, category_id, amount_minor, description, occurred_at, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      (id, type, category_id, subcategory_id, amount_minor, quantity, description, occurred_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     createId(),
     input.type,
     input.categoryId,
+    input.subcategoryId,
     input.amountMinor,
+    input.quantity,
     input.description.trim(),
     input.occurredAt,
     new Date().toISOString(),
@@ -198,4 +210,35 @@ export async function saveMoneyPreference(
     key,
     value,
   );
+}
+
+export async function saveSubcategory(input: {
+  categoryId: string;
+  name: string;
+  amountMinor: number | null;
+  id?: string;
+}): Promise<void> {
+  const db = getDb();
+  const cleanName = input.name.trim();
+  if (input.id) {
+    await db.runAsync(
+      'UPDATE money_subcategories SET name = ?, amount_minor = ? WHERE id = ?',
+      cleanName,
+      input.amountMinor,
+      input.id,
+    );
+  } else {
+    await db.runAsync(
+      'INSERT INTO money_subcategories (id, category_id, name, amount_minor, created_at) VALUES (?, ?, ?, ?, ?)',
+      createId(),
+      input.categoryId,
+      cleanName,
+      input.amountMinor,
+      new Date().toISOString(),
+    );
+  }
+}
+
+export async function deleteSubcategory(id: string): Promise<void> {
+  await getDb().runAsync('DELETE FROM money_subcategories WHERE id = ?', id);
 }

@@ -1439,6 +1439,192 @@ export async function importDeckPayload(
   return { deck, entries: entryIds.size, cards: cardIds.size };
 }
 
+/**
+ * Merge-import: bring a backup file's cards into an EXISTING deck.
+ * Words already in the target deck (same lemma) are skipped so the same
+ * word never gets two cards. All ids are regenerated, foreign keys are
+ * rewritten, and review history is preserved so stats keep working.
+ * Existing decks and cards are never deleted or overwritten.
+ */
+export async function importDeckIntoDeck(
+  payload: BackupPayload,
+  targetDeckId: string,
+): Promise<{ deck: Deck; entries: number; cards: number; skipped: number }> {
+  const db = getDb();
+  const deck = await db.getFirstAsync<Deck>('SELECT * FROM decks WHERE id = ?', targetDeckId);
+  if (!deck) {
+    throw new Error('Target deck not found.');
+  }
+
+  const now = nowIso();
+
+  // Lemmas already in the target deck — skip them to avoid duplicate cards.
+  const existing = new Map<string, string>(); // normalized lemma -> entry_id
+  const rows = await db.getAllAsync<{ id: string; lemma: string }>(
+    `SELECT e.id, e.lemma
+     FROM entries e
+     JOIN cards c ON c.entry_id = e.id
+     WHERE c.deck_id = ?`,
+    targetDeckId,
+  );
+  for (const row of rows) {
+    const key = normalizeRussian(stripAccents(row.lemma)).toLocaleLowerCase('ru-RU');
+    if (key && !existing.has(key)) existing.set(key, row.id);
+  }
+
+  const entryIds = new Map<string, string>(); // old id -> target entry id
+  const entryLemmas = new Map<string, string>(); // old id -> stored lemma
+  const cardIds = new Map<string, string>(); // old id -> new card id
+
+  let entriesImported = 0;
+  let cardsImported = 0;
+  let skipped = 0;
+
+  await db.withTransactionAsync(async () => {
+    await db.runAsync('UPDATE decks SET updated_at = ? WHERE id = ?', now, targetDeckId);
+
+    for (const entry of payload.entries) {
+      const lemma = stripAccents(entry.lemma);
+      const key = normalizeRussian(lemma).toLocaleLowerCase('ru-RU');
+      const existingId = existing.get(key);
+      let newEntryId: string;
+      if (existingId) {
+        newEntryId = existingId;
+      } else {
+        newEntryId = createId();
+        await db.runAsync(
+          `INSERT INTO entries (id, lemma, language, pos, gloss, notes, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          newEntryId,
+          lemma,
+          entry.language ?? 'ru',
+          entry.pos ?? '',
+          entry.gloss,
+          entry.notes ?? '',
+          entry.created_at ?? now,
+        );
+        const forms = new Set([normalizeRussian(lemma)]);
+        for (const form of forms) {
+          if (!form) continue;
+          await db.runAsync(
+            `INSERT INTO inflections (id, entry_id, form, tags) VALUES (?, ?, ?, ?)`,
+            createId(),
+            newEntryId,
+            form,
+            'lemma',
+          );
+        }
+        entriesImported += 1;
+        existing.set(key, newEntryId);
+      }
+      entryIds.set(entry.id, newEntryId);
+      entryLemmas.set(entry.id, lemma);
+    }
+
+    for (const card of payload.cards) {
+      const entryId = entryIds.get(card.entry_id);
+      if (!entryId) continue;
+
+      // Don't create a second card for a word already in this deck.
+      const haveCard = await db.getFirstAsync<{ id: string }>(
+        'SELECT id FROM cards WHERE deck_id = ? AND entry_id = ? LIMIT 1',
+        targetDeckId,
+        entryId,
+      );
+      if (haveCard) {
+        skipped += 1;
+        continue;
+      }
+
+      const fsrs = emptyFsrsCard(new Date(now));
+      const maxOrderRow = await db.getFirstAsync<{ max_order: number }>(
+        'SELECT COALESCE(MAX(unlock_order), 0) AS max_order FROM cards WHERE deck_id = ?',
+        targetDeckId,
+      );
+      const unlockOrder = Number(maxOrderRow?.max_order ?? 0) + 1;
+      const newCardId = createId();
+      cardIds.set(card.id, newCardId);
+
+      await db.runAsync(
+        `INSERT INTO cards (
+          id, deck_id, entry_id, card_type, front, back,
+          due, stability, difficulty, elapsed_days, scheduled_days, learning_steps,
+          reps, lapses, state, mastery_tier, quiz_due, last_review, review_face, review_history, locked, unlock_order, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        newCardId,
+        targetDeckId,
+        entryId,
+        card.card_type ?? 'recognition',
+        entryLemmas.get(card.entry_id) ?? stripAccents(card.front),
+        card.back,
+        card.due ?? now,
+        fsrs.stability,
+        fsrs.difficulty,
+        fsrs.elapsed_days,
+        fsrs.scheduled_days,
+        fsrs.learning_steps,
+        fsrs.reps,
+        fsrs.lapses,
+        fsrs.state,
+        card.mastery_tier ?? 0,
+        card.quiz_due || card.due || now,
+        card.last_review ?? null,
+        1,
+        '[]',
+        1,
+        unlockOrder,
+        card.created_at ?? now,
+      );
+
+      cardsImported += 1;
+    }
+
+    for (const example of payload.examples) {
+      const entryId = entryIds.get(example.entry_id);
+      if (!entryId) continue;
+      await db.runAsync(
+        `INSERT INTO examples (id, entry_id, text, translation, hint, source, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        createId(),
+        entryId,
+        example.text,
+        example.translation ?? '',
+        (example as any).hint ?? '',
+        example.source ?? 'user',
+        example.created_at ?? now,
+      );
+    }
+
+    for (const review of payload.reviews) {
+      const cardId = cardIds.get(review.card_id);
+      if (!cardId) continue;
+      await db.runAsync(
+        `INSERT INTO reviews (
+          id, card_id, rating, state, due, stability, difficulty,
+          elapsed_days, scheduled_days, learning_steps, reviewed_at, faces
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        createId(),
+        cardId,
+        review.rating,
+        review.state,
+        review.due,
+        review.stability,
+        review.difficulty,
+        review.elapsed_days,
+        review.scheduled_days,
+        review.learning_steps,
+        review.reviewed_at,
+        facesToJson((review as any).faces),
+      );
+    }
+  });
+
+  // Cards start locked on import. Unlock the initial studying batch for the deck.
+  await unlockNextCards(targetDeckId);
+
+  return { deck, entries: entriesImported, cards: cardsImported, skipped };
+}
+
 export async function dumpBackup(): Promise<BackupPayload> {
   const db = getDb();
   const [decks, entries, inflections, cards, reviewRows, examples] = await Promise.all([

@@ -135,15 +135,30 @@ CREATE TABLE IF NOT EXISTS money_categories (
   UNIQUE (type, name)
 );
 
+CREATE TABLE IF NOT EXISTS money_subcategories (
+  id TEXT PRIMARY KEY NOT NULL,
+  category_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  amount_minor INTEGER,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (category_id) REFERENCES money_categories(id) ON DELETE CASCADE,
+  UNIQUE (category_id, name)
+);
+
+CREATE INDEX IF NOT EXISTS idx_money_subcategories_category ON money_subcategories(category_id);
+
 CREATE TABLE IF NOT EXISTS money_transactions (
   id TEXT PRIMARY KEY NOT NULL,
   type TEXT NOT NULL CHECK (type IN ('income', 'expense')),
   category_id TEXT,
+  subcategory_id TEXT,
   amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+  quantity INTEGER NOT NULL DEFAULT 1,
   description TEXT NOT NULL DEFAULT '',
   occurred_at TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  FOREIGN KEY (category_id) REFERENCES money_categories(id) ON DELETE SET NULL
+  FOREIGN KEY (category_id) REFERENCES money_categories(id) ON DELETE SET NULL,
+  FOREIGN KEY (subcategory_id) REFERENCES money_subcategories(id) ON DELETE SET NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_money_transactions_date

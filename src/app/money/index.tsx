@@ -27,23 +27,27 @@ import {
   isValidLocalDate,
   localDateString,
   parseAmount,
+  parseAmountExpression,
   parseLocalDate,
 } from '@/money/dates';
 import {
   deleteCategory,
   deleteRecurringRule,
+  deleteSubcategory,
   initializeMoneyTracker,
   loadMoneyData,
   saveBudget,
   saveCategory,
   saveMoneyPreference,
   saveRecurringRule,
+  saveSubcategory,
   saveTransaction,
 } from '@/money/storage';
 import type {
   CalendarEntry,
   MoneyCategory,
   MoneyPreferences,
+  MoneySubcategory,
   MoneyTransaction,
   RecurringFrequency,
   RecurringRule,
@@ -78,6 +82,8 @@ export default function MoneyHomeScreen() {
   const [selectedDate, setSelectedDate] = useState(localDateString(new Date()));
   const [transactionType, setTransactionType] = useState<TransactionType>('expense');
   const [categoryId, setCategoryId] = useState('');
+  const [subcategoryId, setSubcategoryId] = useState<string | null>(null);
+  const [expandedCategoryId, setExpandedCategoryId] = useState<string | null>(null);
   const [amount, setAmount] = useState('');
   const [description, setDescription] = useState('');
   const [occurredAt, setOccurredAt] = useState(localDateString(new Date()));
@@ -88,8 +94,15 @@ export default function MoneyHomeScreen() {
   const [weekday, setWeekday] = useState(new Date().getDay());
   const [endDate, setEndDate] = useState('');
   const [categoryModal, setCategoryModal] = useState(false);
-  const [categoryName, setCategoryName] = useState('');
-  const [editingCategory, setEditingCategory] = useState<MoneyCategory | null>(null);
+  const [newItemName, setNewItemName] = useState('');
+  const [selectedParentCategoryId, setSelectedParentCategoryId] = useState<string | null>(null);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [editingCategoryId, setEditingCategoryId] = useState<string | null>(null);
+  const [subcategoryModal, setSubcategoryModal] = useState(false);
+  const [subcategoryCategoryId, setSubcategoryCategoryId] = useState<string | null>(null);
+  const [subcategoryName, setSubcategoryName] = useState('');
+  const [subcategoryAmount, setSubcategoryAmount] = useState('');
+  const [editingSubcategory, setEditingSubcategory] = useState<MoneySubcategory | null>(null);
   const [budgetCategoryId, setBudgetCategoryId] = useState('all');
   const [budgetAmount, setBudgetAmount] = useState('');
 
@@ -137,6 +150,7 @@ export default function MoneyHomeScreen() {
         amount_minor: rule.amount_minor,
         description: rule.description || rule.frequency.replace('_', ' '),
         category_name: rule.category_name,
+        subcategory_name: null,
         occurred_at: date,
         scheduled: true,
       })),
@@ -165,11 +179,11 @@ export default function MoneyHomeScreen() {
 
   const handleSubmit = async () => {
     if (!data) return;
-    const amountMinor = parseAmount(amount, preferences.currency);
+    const amountMinor = parseAmountExpression(amount, preferences.currency);
     if (amountMinor === null) {
       Alert.alert(
         'Check the amount',
-        `Enter a positive amount${currencyDecimals(preferences.currency) ? ` with up to ${currencyDecimals(preferences.currency)} decimal places` : ''}.`,
+        `Enter a positive amount (you can use + and -, e.g. 3000-499)${currencyDecimals(preferences.currency) ? ` with up to ${currencyDecimals(preferences.currency)} decimal places` : ''}.`,
       );
       return;
     }
@@ -218,6 +232,7 @@ export default function MoneyHomeScreen() {
           saveTransaction({
             type: transactionType,
             categoryId: effectiveCategoryId || null,
+            subcategoryId: subcategoryId || null,
             amountMinor,
             description,
             occurredAt,
@@ -232,19 +247,100 @@ export default function MoneyHomeScreen() {
     setEndDate('');
   };
 
-  const handleSaveCategory = async () => {
-    const name = categoryName.trim();
+  const handleSaveNewItem = async () => {
+    const name = newItemName.trim();
     if (!name) {
-      Alert.alert('Category name required', 'Enter a name for this category.');
+      Alert.alert('Name required', 'Enter a name for the category or subcategory.');
       return;
     }
+    if (editingCategoryId) {
+      // Renaming an existing top-level category
+      const saved = await runWrite(
+        () => saveCategory(transactionType, name, editingCategoryId),
+        'Category updated.',
+      );
+      if (!saved) return;
+      setEditingCategoryId(null);
+      setNewItemName('');
+      setSelectedParentCategoryId(null);
+      setSubcategoryAmount('');
+      setDropdownOpen(false);
+      return;
+    }
+    if (selectedParentCategoryId === null) {
+      // Create a new top-level category
+      const saved = await runWrite(
+        () => saveCategory(transactionType, name),
+        'Category added.',
+      );
+      if (!saved) return;
+    } else {
+      // Create a subcategory under the selected parent
+      let amountMinor: number | null = null;
+      if (subcategoryAmount.trim() !== '') {
+        amountMinor = parseAmount(subcategoryAmount, preferences.currency);
+        if (amountMinor === null) {
+          Alert.alert(
+            'Check the amount',
+            `Enter a positive amount${currencyDecimals(preferences.currency) ? ` with up to ${currencyDecimals(preferences.currency)} decimal places` : ''}.`,
+          );
+          return;
+        }
+      }
+      const saved = await runWrite(
+        () =>
+          saveSubcategory({
+            categoryId: selectedParentCategoryId,
+            name,
+            amountMinor,
+          }),
+        'Subcategory added.',
+      );
+      if (!saved) return;
+    }
+    setNewItemName('');
+    setSelectedParentCategoryId(null);
+    setSubcategoryAmount('');
+    setDropdownOpen(false);
+  };
+
+  const handleSaveSubcategory = async () => {
+    const name = subcategoryName.trim();
+    if (!name) {
+      Alert.alert('Subcategory name required', 'Enter a name for this subcategory.');
+      return;
+    }
+    if (!subcategoryCategoryId) {
+      Alert.alert('No category selected', 'Please select a category first.');
+      return;
+    }
+    let amountMinor: number | null = null;
+    if (subcategoryAmount.trim() !== '') {
+      amountMinor = parseAmount(subcategoryAmount, preferences.currency);
+      if (amountMinor === null) {
+        Alert.alert(
+          'Check the amount',
+          `Enter a positive amount${currencyDecimals(preferences.currency) ? ` with up to ${currencyDecimals(preferences.currency)} decimal places` : ''}.`,
+        );
+        return;
+      }
+    }
     const saved = await runWrite(
-      () => saveCategory(transactionType, name, editingCategory?.id),
-      editingCategory ? 'Category updated.' : 'Category added.',
+      () =>
+        saveSubcategory({
+          categoryId: subcategoryCategoryId,
+          name,
+          amountMinor,
+          id: editingSubcategory?.id,
+        }),
+      editingSubcategory ? 'Subcategory updated.' : 'Subcategory added.',
     );
     if (!saved) return;
-    setCategoryName('');
-    setEditingCategory(null);
+    setSubcategoryModal(false);
+    setSubcategoryCategoryId(null);
+    setEditingSubcategory(null);
+    setSubcategoryName('');
+    setSubcategoryAmount('');
   };
 
   const handleSaveBudget = async () => {
@@ -279,6 +375,7 @@ export default function MoneyHomeScreen() {
     ? categoryId
     : categoriesForType[0]?.id ?? '';
   const expenseCategories = data?.categories.filter((category) => category.type === 'expense') ?? [];
+
   const selectedDayEntries = [
     ...periodTransactions
       .filter((transaction) => transaction.occurred_at.slice(0, 10) === selectedDate)
@@ -415,13 +512,9 @@ export default function MoneyHomeScreen() {
               selectedDate={selectedDate}
               transactions={periodTransactions}
               recurring={recurringEvents}
+              currency={preferences.currency}
               onSelect={setSelectedDate}
             />
-            <View style={styles.legend}>
-              <ThemedText themeColor="textSecondary">● Expense</ThemedText>
-              <ThemedText style={{ color: '#26845B' }}>● Income</ThemedText>
-              <ThemedText style={{ color: theme.tint }}>○ Scheduled</ThemedText>
-            </View>
           </CardBlock>
           <CardBlock>
             <ThemedText type="smallBold">
@@ -454,7 +547,13 @@ export default function MoneyHomeScreen() {
                 key={type}
                 accessibilityRole="tab"
                 accessibilityState={{ selected: transactionType === type }}
-                onPress={() => setTransactionType(type)}
+                onPress={() => {
+                  setTransactionType(type);
+                  setCategoryId('');
+                  setSubcategoryId(null);
+                  setExpandedCategoryId(null);
+                  setAmount('');
+                }}
                 style={[
                   styles.segment,
                   {
@@ -474,20 +573,124 @@ export default function MoneyHomeScreen() {
               keyboardType="decimal-pad"
               value={amount}
               onChangeText={setAmount}
-              placeholder="0"
+              placeholder="0 (e.g. 3000-499)"
               placeholderTextColor={theme.textSecondary}
               style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
             />
+            <View style={styles.amountOperators}>
+              <Pressable
+                accessibilityLabel="Add plus operator"
+                onPress={() => setAmount((current) => current + '+')}
+                style={[
+                  styles.operatorButton,
+                  {
+                    backgroundColor: theme.backgroundElement,
+                    borderColor: theme.backgroundSelected,
+                  },
+                ]}>
+                <ThemedText
+                  style={[
+                    styles.operatorText,
+                    { color: theme.tint },
+                  ]}>
+                  +
+                </ThemedText>
+              </Pressable>
+              <Pressable
+                accessibilityLabel="Add minus operator"
+                onPress={() => setAmount((current) => current + '-')}
+                style={[
+                  styles.operatorButton,
+                  {
+                    backgroundColor: theme.backgroundElement,
+                    borderColor: theme.backgroundSelected,
+                  },
+                ]}>
+                <ThemedText
+                  style={[
+                    styles.operatorText,
+                    { color: theme.tint },
+                  ]}>
+                  −
+                </ThemedText>
+              </Pressable>
+            </View>
             <ThemedText type="smallBold">Category</ThemedText>
-            <View style={styles.chipWrap}>
-              {categoriesForType.map((category) => (
-                <ChoiceChip
-                  key={category.id}
-                  label={category.name}
-                  selected={category.id === effectiveCategoryId}
-                  onPress={() => setCategoryId(category.id)}
-                />
-              ))}
+            <View style={styles.categoryList}>
+              {categoriesForType.map((category) => {
+                const isExpanded = expandedCategoryId === category.id;
+                const subs = (data?.subcategories ?? []).filter(
+                  (s) => s.category_id === category.id
+                );
+                return (
+                  <View key={category.id} style={styles.categorySection}>
+                    <Pressable
+                      accessibilityRole="button"
+                      onPress={() =>
+                        setExpandedCategoryId(
+                          expandedCategoryId === category.id ? null : category.id
+                        )
+                      }
+                      style={[
+                        styles.categoryRow,
+                        {
+                          backgroundColor: theme.backgroundElement,
+                          borderColor: theme.backgroundSelected,
+                        },
+                      ]}>
+                      <ThemedText type="smallBold">{category.name}</ThemedText>
+                      <ThemedText style={{ color: theme.tint, fontSize: 20 }}>
+                        {isExpanded ? '▾' : '▸'}
+                      </ThemedText>
+                    </Pressable>
+                    {isExpanded && subs.length > 0 && (
+                      <View style={styles.subcategoryList}>
+                        {subs.map((sub) => {
+                          const isSelected = subcategoryId === sub.id;
+                          const fixedLabel = sub.amount_minor != null
+                            ? ` · ${formatMoney(sub.amount_minor, preferences.currency)}`
+                            : '';
+                          return (
+                            <Pressable
+                              key={sub.id}
+                              accessibilityRole="button"
+                              onPress={() => {
+                                setSubcategoryId(sub.id);
+                                setCategoryId(category.id);
+                                if (sub.amount_minor != null) {
+                                  setAmount(
+                                    String(
+                                      sub.amount_minor /
+                                        10 ** currencyDecimals(preferences.currency)
+                                    )
+                                  );
+                                }
+                              }}
+                              style={[
+                                styles.subcategoryRow,
+                                isSelected && {
+                                  backgroundColor: theme.backgroundSelected,
+                                },
+                                {
+                                  borderColor: theme.backgroundSelected,
+                                },
+                              ]}>
+                              <ThemedText type="small">
+                                {sub.name}{fixedLabel}
+                              </ThemedText>
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    )}
+                    {!isExpanded && subs.length > 0 && (
+                      <ThemedText type="small" themeColor="textSecondary">
+                        {subs.length} subcategory{subs.length !== 1 ? 'ies' : ''}
+                      </ThemedText>
+                    )}
+                  </View>
+                );
+              })}
             </View>
             <UiButton label="Manage categories" variant="secondary" onPress={() => setCategoryModal(true)} />
             <ThemedText type="smallBold">Description (optional)</ThemedText>
@@ -675,56 +878,275 @@ export default function MoneyHomeScreen() {
             </Pressable>
           </View>
           <ScrollView contentContainerStyle={styles.modalContent} keyboardShouldPersistTaps="handled">
-            {categoriesForType.map((category) => (
-              <View key={category.id} style={styles.categoryRow}>
-                <ThemedText style={styles.flex}>{category.name}</ThemedText>
-                <Pressable
-                  onPress={() => {
-                    setEditingCategory(category);
-                    setCategoryName(category.name);
-                  }}>
-                  <ThemedText style={{ color: theme.tint }}>Edit</ThemedText>
-                </Pressable>
-                <Pressable
-                  onPress={() =>
-                    Alert.alert(
-                      'Delete category?',
-                      'Existing transactions will stay but become uncategorized.',
-                      [
-                        { text: 'Cancel', style: 'cancel' },
-                        {
-                          text: 'Delete',
-                          style: 'destructive',
-                          onPress: () => {
-                            void runWrite(() => deleteCategory(category.id), 'Category deleted.');
-                            if (categoryId === category.id) setCategoryId('');
-                          },
-                        },
-                      ],
-                    )
-                  }>
-                  <ThemedText style={{ color: theme.error }}>Delete</ThemedText>
-                </Pressable>
-              </View>
-            ))}
-            <ThemedText type="smallBold">
-              {editingCategory ? 'Rename category' : 'New category'}
+            {/* --- Add new category / subcategory --- */}
+            <CardBlock
+              style={[
+                styles.modalCard,
+                { backgroundColor: theme.backgroundElement },
+              ]}>
+              <ThemedText type="smallBold">Add new</ThemedText>
+              <TextInput
+                value={newItemName}
+                onChangeText={setNewItemName}
+                placeholder="Category or subcategory name"
+                placeholderTextColor={theme.textSecondary}
+                style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+              />
+              <ThemedText type="smallBold">Parent category</ThemedText>
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => setDropdownOpen((open) => !open)}
+                style={[
+                  styles.dropdown,
+                  {
+                    borderColor: theme.backgroundSelected,
+                    backgroundColor: dropdownOpen
+                      ? theme.backgroundElement
+                      : theme.background,
+                  },
+                ]}>
+                <ThemedText style={{ color: theme.text }}>
+                  {selectedParentCategoryId === null
+                    ? 'New category'
+                    : data?.categories.find((c) => c.id === selectedParentCategoryId)?.name ??
+                      'New category'}
+                </ThemedText>
+                <ThemedText style={{ color: theme.tint, fontSize: 20 }}>
+                  {dropdownOpen ? '▲' : '▼'}
+                </ThemedText>
+              </Pressable>
+              {dropdownOpen && (
+                <View style={[styles.dropdownList, { borderColor: theme.backgroundSelected }]}>
+                  <Pressable
+                    accessibilityRole="button"
+                    onPress={() => {
+                      setSelectedParentCategoryId(null);
+                      setDropdownOpen(false);
+                    }}
+                    style={styles.dropdownItem}>
+                    <ThemedText style={{ color: theme.text }}>New category</ThemedText>
+                  </Pressable>
+                  {categoriesForType.map((category) => (
+                    <Pressable
+                      key={category.id}
+                      accessibilityRole="button"
+                      onPress={() => {
+                        setSelectedParentCategoryId(category.id);
+                        setDropdownOpen(false);
+                      }}
+                      style={styles.dropdownItem}>
+                      <ThemedText style={{ color: theme.text }}>{category.name}</ThemedText>
+                    </Pressable>
+                  ))}
+                </View>
+              )}
+              {selectedParentCategoryId !== null && (
+                <View style={styles.amountRow}>
+                  <ThemedText type="smallBold">Fixed amount (optional)</ThemedText>
+                  <ThemedText themeColor="textSecondary">
+                    Leave blank if the amount varies each time.
+                  </ThemedText>
+                  <TextInput
+                    keyboardType="decimal-pad"
+                    value={subcategoryAmount}
+                    onChangeText={setSubcategoryAmount}
+                    placeholder={`Amount in ${preferences.currency}`}
+                    placeholderTextColor={theme.textSecondary}
+                    style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+                  />
+                </View>
+              )}
+              <UiButton
+                label={editingCategoryId ? 'Save changes' : selectedParentCategoryId === null ? 'Add category' : 'Add subcategory'}
+                onPress={handleSaveNewItem}
+              />
+            </CardBlock>
+
+            {/* --- Existing categories (manage) --- */}
+            <ThemedText type="smallBold" style={styles.manageSectionTitle}>
+              Existing {transactionType === 'expense' ? 'expense' : 'income'} categories
             </ThemedText>
+            {categoriesForType.map((category) => {
+              const isExpanded = expandedCategoryId === category.id;
+              const subs = (data?.subcategories ?? []).filter(
+                (s) => s.category_id === category.id
+              );
+              return (
+                <View key={category.id} style={styles.modalCategorySection}>
+                  <View style={styles.modalCategoryRow}>
+                    <ThemedText style={styles.flex}>{category.name}</ThemedText>
+                    <View style={styles.modalCategoryActions}>
+                      <Pressable
+                        onPress={() =>
+                          setExpandedCategoryId(
+                            expandedCategoryId === category.id ? null : category.id
+                          )
+                        }>
+                        <ThemedText style={{ color: theme.tint }}>
+                          {isExpanded ? '▾' : '▸'}
+                        </ThemedText>
+                      </Pressable>
+                      <Pressable
+                        onPress={() => {
+                          setEditingCategoryId(category.id);
+                          setNewItemName(category.name);
+                          setSelectedParentCategoryId(null);
+                          setDropdownOpen(false);
+                        }}>
+                        <ThemedText style={{ color: theme.tint }}>Edit</ThemedText>
+                      </Pressable>
+                      <Pressable
+                        onPress={() =>
+                          Alert.alert(
+                            'Delete category?',
+                            'Existing transactions will stay but become uncategorized.',
+                            [
+                              { text: 'Cancel', style: 'cancel' },
+                              {
+                                text: 'Delete',
+                                style: 'destructive',
+                                onPress: () => {
+                                  void runWrite(
+                                    () => deleteCategory(category.id),
+                                    'Category deleted.',
+                                  );
+                                  if (categoryId === category.id) setCategoryId('');
+                                },
+                              },
+                            ],
+                          )
+                        }>
+                        <ThemedText style={{ color: theme.error }}>Delete</ThemedText>
+                      </Pressable>
+                    </View>
+                  </View>
+                  {isExpanded && subs.length > 0 && (
+                    <View style={styles.subcategoryList}>
+                      {subs.map((sub) => (
+                        <View key={sub.id} style={styles.subcategoryRowModal}>
+                          <ThemedText style={styles.flex}>
+                            {sub.name}
+                            {sub.amount_minor != null && (
+                              <ThemedText type="small" themeColor="textSecondary">
+                                {' · '}
+                                {formatMoney(sub.amount_minor, preferences.currency)}
+                              </ThemedText>
+                            )}
+                          </ThemedText>
+                          <View style={styles.subcategoryActions}>
+                            <Pressable
+                              onPress={() => {
+                                setEditingSubcategory(sub);
+                                setSubcategoryCategoryId(sub.category_id);
+                                setSubcategoryName(sub.name);
+                                setSubcategoryAmount(
+                                  sub.amount_minor != null
+                                    ? String(
+                                        sub.amount_minor /
+                                          10 ** currencyDecimals(preferences.currency)
+                                      )
+                                    : ''
+                                );
+                                setSubcategoryModal(true);
+                              }}>
+                              <ThemedText style={{ color: theme.tint }}>Edit</ThemedText>
+                            </Pressable>
+                            <Pressable
+                              onPress={() =>
+                                Alert.alert(
+                                  'Delete subcategory?',
+                                  'Transactions using it will stay but become uncategorized.',
+                                  [
+                                    { text: 'Cancel', style: 'cancel' },
+                                    {
+                                      text: 'Delete',
+                                      style: 'destructive',
+                                      onPress: () => {
+                                        void runWrite(
+                                          () => deleteSubcategory(sub.id),
+                                          'Subcategory deleted.',
+                                        );
+                                        if (subcategoryId === sub.id) setSubcategoryId(null);
+                                      },
+                                    },
+                                  ],
+                                )
+                              }>
+                              <ThemedText style={{ color: theme.error }}>Delete</ThemedText>
+                            </Pressable>
+                          </View>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                  {!isExpanded && subs.length > 0 && (
+                    <ThemedText type="small" themeColor="textSecondary">
+                      {subs.length} subcategory{subs.length !== 1 ? 'ies' : ''}
+                    </ThemedText>
+                  )}
+                </View>
+              );
+            })}
+          </ScrollView>
+        </View>
+      </Modal>
+      <Modal
+        visible={subcategoryModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => {
+          setSubcategoryModal(false);
+          setSubcategoryCategoryId(null);
+          setEditingSubcategory(null);
+        }}>
+        <View style={[styles.modal, { backgroundColor: theme.background }]}>
+          <View style={styles.modalHeader}>
+            <ThemedText type="subtitle" style={styles.modalTitle}>
+              {editingSubcategory ? 'Edit subcategory' : 'New subcategory'}
+            </ThemedText>
+            <Pressable onPress={() => {
+              setSubcategoryModal(false);
+              setSubcategoryCategoryId(null);
+              setEditingSubcategory(null);
+            }}>
+              <ThemedText style={{ color: theme.tint }}>Done</ThemedText>
+            </Pressable>
+          </View>
+          <ScrollView contentContainerStyle={styles.modalContent} keyboardShouldPersistTaps="handled">
+            <ThemedText type="smallBold">Subcategory name</ThemedText>
             <TextInput
-              value={categoryName}
-              onChangeText={setCategoryName}
-              placeholder="Category name"
+              value={subcategoryName}
+              onChangeText={setSubcategoryName}
+              placeholder="e.g. Coca Cola 1.5L"
               placeholderTextColor={theme.textSecondary}
               style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
             />
-            <UiButton label={editingCategory ? 'Save changes' : 'Add category'} onPress={handleSaveCategory} />
-            {editingCategory && (
+            <ThemedText type="smallBold">Fixed amount (optional)</ThemedText>
+            <ThemedText themeColor="textSecondary">
+              Leave blank if the amount varies each time.
+            </ThemedText>
+            <TextInput
+              keyboardType="decimal-pad"
+              value={subcategoryAmount}
+              onChangeText={setSubcategoryAmount}
+              placeholder={`Amount in ${preferences.currency}`}
+              placeholderTextColor={theme.textSecondary}
+              style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+            />
+            <UiButton
+              label={editingSubcategory ? 'Save changes' : 'Add subcategory'}
+              onPress={handleSaveSubcategory}
+            />
+            {editingSubcategory && (
               <UiButton
                 label="Cancel editing"
                 variant="secondary"
                 onPress={() => {
-                  setEditingCategory(null);
-                  setCategoryName('');
+                  setSubcategoryModal(false);
+                  setSubcategoryCategoryId(null);
+                  setEditingSubcategory(null);
+                  setSubcategoryName('');
+                  setSubcategoryAmount('');
                 }}
               />
             )}
@@ -797,6 +1219,7 @@ function TransactionRow({
 }
 
 function CalendarEntryRow({ entry, currency }: { entry: CalendarEntry; currency: string }) {
+  const theme = useTheme();
   return (
     <View style={styles.listRow}>
       <View style={styles.flex}>
@@ -804,10 +1227,15 @@ function CalendarEntryRow({ entry, currency }: { entry: CalendarEntry; currency:
           {entry.description || entry.category_name || 'Uncategorized'}
         </ThemedText>
         <ThemedText type="small" themeColor="textSecondary">
-          {entry.category_name ?? 'Uncategorized'} · {entry.scheduled ? 'Scheduled' : entry.type}
+          {entry.category_name ?? 'Uncategorized'}{entry.subcategory_name ? ` · ${entry.subcategory_name}` : ''} · {entry.scheduled ? 'Scheduled' : entry.type}
         </ThemedText>
       </View>
-      <ThemedText style={{ color: entry.type === 'income' ? '#26845B' : undefined, fontWeight: '700' }}>
+      <ThemedText
+        style={{
+          color:
+            entry.type === 'income' ? '#26845B' : entry.type === 'expense' ? theme.error : undefined,
+          fontWeight: '700',
+        }}>
         {entry.type === 'income' ? '+' : '−'}{formatMoney(entry.amount_minor, currency)}
       </ThemedText>
     </View>
@@ -950,6 +1378,7 @@ function CalendarGrid({
   selectedDate,
   transactions,
   recurring,
+  currency,
   onSelect,
 }: {
   start: Date;
@@ -957,6 +1386,7 @@ function CalendarGrid({
   selectedDate: string;
   transactions: MoneyTransaction[];
   recurring: CalendarEntry[];
+  currency: string;
   onSelect: (date: string) => void;
 }) {
   const theme = useTheme();
@@ -967,6 +1397,24 @@ function CalendarGrid({
     return date;
   });
   const end = getPeriodEnd(start, startDay);
+
+  const dayIncome = new Map<string, number>();
+  const dayExpense = new Map<string, number>();
+  const addEntry = (entry: { type: TransactionType; amount_minor: number; occurred_at: string }) => {
+    const dateString = entry.occurred_at.slice(0, 10);
+    const target = entry.type === 'income' ? dayIncome : dayExpense;
+    target.set(dateString, (target.get(dateString) ?? 0) + entry.amount_minor);
+  };
+  for (const transaction of transactions) addEntry(transaction);
+  for (const entry of recurring) addEntry(entry);
+
+  // Chunk the 42 grid dates into 6 weeks of 7 so each row renders exactly
+  // 7 cells and Saturday never wraps to the next line.
+  const weeks: Date[][] = [];
+  for (let i = 0; i < dates.length; i += 7) {
+    weeks.push(dates.slice(i, i + 7));
+  }
+
   return (
     <View style={styles.calendarGrid}>
       <View style={styles.weekRow}>
@@ -976,45 +1424,52 @@ function CalendarGrid({
           </ThemedText>
         ))}
       </View>
-      <View style={styles.dateGrid}>
-        {dates.map((date) => {
-          const dateString = localDateString(date);
-          const inPeriod = date >= start && date <= end;
-          const dayTransactions = transactions.filter((transaction) => transaction.occurred_at.slice(0, 10) === dateString);
-          const hasExpense = dayTransactions.some((transaction) => transaction.type === 'expense');
-          const hasIncome = dayTransactions.some((transaction) => transaction.type === 'income');
-          const hasSchedule = recurring.some((event) => event.occurred_at === dateString);
-          return (
-            <Pressable
-              key={dateString}
-              accessibilityRole="button"
-              accessibilityLabel={`${date.toLocaleDateString(undefined, {
-                month: 'long',
-                day: 'numeric',
-              })}${hasExpense ? ', expense' : ''}${hasIncome ? ', income' : ''}${hasSchedule ? ', scheduled entry' : ''}`}
-              accessibilityState={{ selected: selectedDate === dateString }}
-              onPress={() => onSelect(dateString)}
-              style={[
-                styles.dateCell,
-                selectedDate === dateString && { backgroundColor: theme.backgroundSelected },
-              ]}>
-              <ThemedText
-                style={{
-                  color: inPeriod ? theme.text : theme.textSecondary,
-                  opacity: inPeriod ? 1 : 0.45,
-                  fontWeight: selectedDate === dateString ? '700' : '400',
-                }}>
-                {date.getDate()}
-              </ThemedText>
-              <View style={styles.dots}>
-                {hasExpense && <View style={[styles.dot, { backgroundColor: theme.error }]} />}
-                {hasIncome && <View style={[styles.dot, { backgroundColor: '#26845B' }]} />}
-                {hasSchedule && <View style={[styles.dot, { backgroundColor: theme.tint }]} />}
-              </View>
-            </Pressable>
-          );
-        })}
-      </View>
+      {weeks.map((week, weekIndex) => (
+        <View key={weekIndex} style={styles.weekRow}>
+          {week.map((date) => {
+            const dateString = localDateString(date);
+            const inPeriod = date >= start && date <= end;
+            const income = dayIncome.get(dateString) ?? 0;
+            const expense = dayExpense.get(dateString) ?? 0;
+            const isSelected = selectedDate === dateString;
+            return (
+              <Pressable
+                key={dateString}
+                accessibilityRole="button"
+                accessibilityLabel={
+                  `${date.toLocaleDateString(undefined, { month: 'long', day: 'numeric' })}${
+                    income > 0 ? `, ${formatMoney(income, currency)} income` : ''
+                  }${expense > 0 ? `, ${formatMoney(expense, currency)} expenses` : ''}`
+                }
+                accessibilityState={{ selected: isSelected }}
+                onPress={() => onSelect(dateString)}
+                style={[styles.dateCell, isSelected && { backgroundColor: theme.backgroundSelected }]}>
+                <ThemedText
+                  style={[
+                    styles.dayNumber,
+                    {
+                      color: inPeriod ? theme.text : theme.textSecondary,
+                      opacity: inPeriod ? 1 : 0.45,
+                      fontWeight: isSelected ? '700' : '400',
+                    },
+                  ]}>
+                  {date.getDate()}
+                </ThemedText>
+                {income > 0 && (
+                  <ThemedText style={[styles.dayAmount, { color: '#26845B' }]} numberOfLines={1}>
+                    +{formatMoney(income, currency)}
+                  </ThemedText>
+                )}
+                {expense > 0 && (
+                  <ThemedText style={[styles.dayAmount, { color: theme.error }]} numberOfLines={1}>
+                    −{formatMoney(expense, currency)}
+                  </ThemedText>
+                )}
+              </Pressable>
+            );
+          })}
+        </View>
+      ))}
     </View>
   );
 }
@@ -1162,27 +1617,21 @@ const styles = StyleSheet.create({
     width: `${100 / 7}%`,
     textAlign: 'center',
   },
-  dateGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-  },
   dateCell: {
     width: `${100 / 7}%`,
-    minHeight: 42,
+    minHeight: 80,
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: 12,
   },
-  dots: {
-    height: 5,
-    flexDirection: 'row',
-    gap: 2,
-    marginTop: 1,
+  dayNumber: {
+    fontSize: 15,
+    lineHeight: 20,
   },
-  dot: {
-    width: 4,
-    height: 4,
-    borderRadius: 2,
+  dayAmount: {
+    fontSize: 10,
+    lineHeight: 13,
+    fontWeight: '600',
   },
   legend: {
     flexDirection: 'row',
@@ -1211,10 +1660,64 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.two,
     fontSize: 16,
   },
+  amountOperators: {
+    flexDirection: 'row',
+    gap: Spacing.two,
+    marginTop: Spacing.one,
+  },
+  operatorButton: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: Spacing.two,
+  },
+  operatorText: {
+    fontSize: 16,
+    fontWeight: '600',
+  },
   chipWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: Spacing.two,
+  },
+  categoryList: {
+    gap: Spacing.one,
+  },
+  categorySection: {
+    gap: Spacing.one,
+  },
+  categoryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+    borderWidth: 1,
+    borderRadius: 12,
+  },
+  subcategoryList: {
+    gap: 1,
+  },
+  subcategoryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+    borderWidth: 1,
+    borderRadius: 8,
+  },
+  addSubcategoryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+    borderWidth: 1,
+    borderRadius: 8,
+    borderStyle: 'dotted',
   },
   chip: {
     borderWidth: 1,
@@ -1288,12 +1791,67 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.four,
     paddingBottom: Spacing.five,
   },
-  categoryRow: {
+  modalCategorySection: {
+    gap: Spacing.one,
+  },
+  modalCategoryRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.three,
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.four,
+    paddingVertical: Spacing.two,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#80808055',
+  },
+  modalCategoryActions: {
+    flexDirection: 'row',
+    gap: Spacing.two,
+  },
+  subcategoryRowModal: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.four,
     paddingVertical: Spacing.two,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#80808055',
+  },
+  subcategoryActions: {
+    flexDirection: 'row',
+    gap: Spacing.two,
+  },
+  modalCard: {
+    gap: Spacing.two,
+    padding: Spacing.three,
+    borderRadius: 12,
+  },
+  manageSectionTitle: {
+    marginTop: Spacing.two,
+  },
+  dropdown: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+    minHeight: 48,
+  },
+  dropdownList: {
+    borderWidth: 1,
+    borderRadius: 12,
+    maxHeight: 200,
+  },
+  dropdownItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#80808055',
+  },
+  amountRow: {
+    gap: Spacing.one,
   },
 });

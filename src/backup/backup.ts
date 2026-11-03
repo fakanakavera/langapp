@@ -6,6 +6,7 @@ import {
   dumpBackup,
   deckNameExists,
   dumpDeckBackup,
+  importDeckIntoDeck,
   importDeckPayload,
   listStudyingCards,
 } from '@/db/queries';
@@ -74,7 +75,53 @@ export async function exportDeckBackup(deckId: string): Promise<void> {
 }
 
 /**
- * Merge-import a file into a NEW deck, keeping existing decks untouched.
+ * Read a picked Langapp backup (.json) or two-column CSV (.csv) file into a
+ * v1 payload. Shared by the new-deck and existing-deck import paths.
+ */
+async function readImportFile(uri: string, fileName: string): Promise<{
+  payload: BackupPayload;
+  skipped: number;
+}> {
+  const file = new File(uri);
+  const text = await file.text();
+  const looksCsv =
+    fileName.toLowerCase().endsWith('.csv') || /^\s*"Front"\s*,/i.test(text.slice(0, 100));
+
+  let skipped = 0;
+  let payload: BackupPayload;
+  if (looksCsv) {
+    const { rows, skipped: unparsed } = parseCsvRecords(text);
+    if (rows.length === 0) {
+      throw new Error('No Front/Back rows found in this CSV.');
+    }
+    const converted = csvToBackupPayload(rows, nowIso());
+    payload = converted.payload;
+    skipped = unparsed + converted.dropped;
+    if (payload.entries.length === 0) {
+      throw new Error(
+        `Could not read any words from this CSV${skipped ? ` (${skipped} rows skipped)` : ''}.`,
+      );
+    }
+  } else {
+    let json: unknown;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      throw new Error(
+        'This file is not valid JSON — it may be incomplete or cut off. ' +
+          'Ask for the file again in smaller parts.',
+      );
+    }
+    if (!isBackupPayload(json)) {
+      throw new Error('This file is not a Langapp v1 backup.');
+    }
+    payload = json;
+  }
+  return { payload, skipped };
+}
+
+/**
+ * Import a file into a NEW deck, keeping existing decks untouched.
  * Accepts Langapp JSON backups and two-column ("Front","Back") CSV files.
  * The name is validated (non-empty, unused) before the file picker opens.
  * Returns null when the user cancels file selection.
@@ -99,43 +146,35 @@ export async function importDeckFile(
   });
   if (result.canceled || !result.assets[0]) return null;
 
-  const file = new File(result.assets[0].uri);
-  const text = await file.text();
-  const fileName = result.assets[0].name ?? '';
-  const looksCsv =
-    fileName.toLowerCase().endsWith('.csv') || /^\s*"Front"\s*,/i.test(text.slice(0, 100));
-
-  let parsed: BackupPayload;
-  let skipped = 0;
-  if (looksCsv) {
-    const { rows, skipped: unparsed } = parseCsvRecords(text);
-    if (rows.length === 0) {
-      throw new Error('No Front/Back rows found in this CSV.');
-    }
-    const converted = csvToBackupPayload(rows, nowIso());
-    parsed = converted.payload;
-    skipped = unparsed + converted.dropped;
-    if (parsed.entries.length === 0) {
-      throw new Error(
-        `Could not read any words from this CSV${skipped ? ` (${skipped} rows skipped)` : ''}.`,
-      );
-    }
-  } else {
-    let json: unknown;
-    try {
-      json = JSON.parse(text);
-    } catch {
-      throw new Error(
-        'This file is not valid JSON — it may be incomplete or cut off. ' +
-          'Ask for the file again in smaller parts.',
-      );
-    }
-    if (!isBackupPayload(json)) {
-      throw new Error('This file is not a Langapp v1 backup.');
-    }
-    parsed = json;
-  }
-  const { deck, entries, cards } = await importDeckPayload(parsed, name);
+  const { payload, skipped } = await readImportFile(
+    result.assets[0].uri,
+    result.assets[0].name ?? '',
+  );
+  const { deck, entries, cards } = await importDeckPayload(payload, name);
   const studying = await listStudyingCards(deck.id);
   return { deckName: deck.name, entries, cards, studying: studying.length, skipped };
+}
+
+/**
+ * Merge-import a file into an EXISTING deck, adding its cards to that deck.
+ * Words already in the target deck (same lemma) are skipped as duplicates.
+ * Existing decks and cards are never deleted or overwritten.
+ * Returns null when the user cancels file selection.
+ */
+export async function importDeckFileIntoDeck(
+  targetDeckId: string,
+): Promise<{ deckName: string; entries: number; cards: number; skipped: number } | null> {
+  const result = await DocumentPicker.getDocumentAsync({
+    type: ['application/json', 'text/csv', '.csv'],
+    copyToCacheDirectory: true,
+    multiple: false,
+  });
+  if (result.canceled || !result.assets[0]) return null;
+
+  const { payload, skipped } = await readImportFile(
+    result.assets[0].uri,
+    result.assets[0].name ?? '',
+  );
+  const { deck, entries, cards } = await importDeckIntoDeck(payload, targetDeckId);
+  return { deckName: deck.name, entries, cards, skipped };
 }

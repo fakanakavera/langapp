@@ -20,8 +20,11 @@ export type MoneyTransaction = {
   id: string;
   type: TransactionType;
   category_id: string | null;
+  subcategory_id: string | null;
   category_name: string | null;
+  subcategory_name: string | null;
   amount_minor: number;
+  quantity: number;
   description: string;
   occurred_at: string;
 };
@@ -47,6 +50,13 @@ export type MoneyBudget = {
   amount_minor: number;
 };
 
+export type MoneySubcategory = {
+  id: string;
+  category_id: string;
+  name: string;
+  amount_minor: number | null;
+};
+
 export type MoneyPreferences = {
   currency: string;
   periodStartDay: number;
@@ -58,6 +68,7 @@ export type CalendarEntry = {
   amount_minor: number;
   description: string;
   category_name: string | null;
+  subcategory_name: string | null;
   occurred_at: string;
   scheduled: boolean;
 };

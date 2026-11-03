@@ -2,7 +2,7 @@ import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
-import { exportDeckBackup } from '@/backup/backup';
+import { exportDeckBackup, importDeckFileIntoDeck } from '@/backup/backup';
 
 import { CardBlock } from '@/components/card-block';
 import { Screen } from '@/components/screen';
@@ -56,6 +56,7 @@ export default function DeckScreen() {
   const [sortAsc, setSortAsc] = useState(true);
   const [now, setNow] = useState(() => Date.now());
   const [exporting, setExporting] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [targetPct, setTargetPct] = useState<number | null>(null);
   const [pulling, setPulling] = useState(false);
   const [resetting, setResetting] = useState(false);
@@ -165,6 +166,29 @@ export default function DeckScreen() {
     }
   }
 
+  async function onImportIntoDeck() {
+    if (typeof id !== 'string') return;
+    setImporting(true);
+    try {
+      const imported = await importDeckFileIntoDeck(id);
+      if (imported) {
+        refresh();
+        Alert.alert(
+          'Cards imported',
+          `${imported.cards} card${imported.cards === 1 ? '' : 's'} (${
+            imported.entries
+          } word${imported.entries === 1 ? '' : 's'}) added to "${imported.deckName}".${
+            imported.skipped ? ` ${imported.skipped} word${imported.skipped === 1 ? '' : 's'} already in the deck and were skipped.` : ''
+          }`,
+        );
+      }
+    } catch (error) {
+      Alert.alert('Import failed', error instanceof Error ? error.message : String(error));
+    } finally {
+      setImporting(false);
+    }
+  }
+
   function onResetStats() {
     if (typeof id !== 'string' || total === 0) return;
     Alert.alert(
@@ -252,6 +276,12 @@ export default function DeckScreen() {
         variant="secondary"
         onPress={onExportDeck}
         disabled={exporting}
+      />
+      <UiButton
+        label={importing ? 'Importing…' : 'Import into this deck'}
+        variant="secondary"
+        onPress={onImportIntoDeck}
+        disabled={importing}
       />
       <UiButton
         label={resetting ? 'Resetting…' : 'Reset all stats'}

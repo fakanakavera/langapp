@@ -250,6 +250,42 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_unknown_words_book ON unknown_words(book_id);
     CREATE INDEX IF NOT EXISTS idx_unknown_words_normalized ON unknown_words(normalized);
   `);
+
+  // Money subcategories (fresh installs get these from SCHEMA_SQL;
+  // older installs pick them up here).
+  const subcategories = await db.getAllAsync<{ name: string }>(
+    "PRAGMA table_info(money_subcategories)"
+  );
+  if (subcategories.length === 0) {
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS money_subcategories (
+        id TEXT PRIMARY KEY NOT NULL,
+        category_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        amount_minor INTEGER,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (category_id) REFERENCES money_categories(id) ON DELETE CASCADE,
+        UNIQUE (category_id, name)
+      );
+      CREATE INDEX IF NOT EXISTS idx_money_subcategories_category ON money_subcategories(category_id);
+    `);
+  }
+
+  // Add subcategory_id to money_transactions for older installs.
+  const txCols = await db.getAllAsync<{ name: string }>(
+    "PRAGMA table_info(money_transactions)"
+  );
+  const txColumnSet = new Set(txCols.map((c) => c.name));
+  if (!txColumnSet.has('subcategory_id')) {
+    await db.execAsync(`
+      ALTER TABLE money_transactions ADD COLUMN subcategory_id TEXT;
+    `);
+  }
+  if (!txColumnSet.has('quantity')) {
+    await db.execAsync(`
+      ALTER TABLE money_transactions ADD COLUMN quantity INTEGER NOT NULL DEFAULT 1;
+    `);
+  }
 }
 
 export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {
