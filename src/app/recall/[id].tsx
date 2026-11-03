@@ -1,6 +1,6 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
-import { StyleSheet, TextInput, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { CardBlock } from '@/components/card-block';
 import { Screen } from '@/components/screen';
@@ -8,8 +8,10 @@ import { ThemedText } from '@/components/themed-text';
 import { UiButton } from '@/components/ui-button';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { getDeck, listDueCards } from '@/db/queries';
+import { getDeck, listCardStatsForDeck, listDueCards } from '@/db/queries';
+import type { CardStats } from '@/db/queries';
 import type { Deck, DueCard } from '@/db/types';
+import { sortCards, type CardSortKey, CARD_SORT_DEFAULT_ASC, CARD_SORT_OPTIONS } from '@/lib/card-sort';
 import { speakEnglish, speakRussian, stopSpeech, toSpokenEnglish } from '@/lib/speech';
 
 function shuffle<T>(items: T[]): T[] {
@@ -32,22 +34,28 @@ export default function RecallScreen() {
   const router = useRouter();
   const theme = useTheme();
   const [deck, setDeck] = useState<Deck | null>(null);
-  const [queue, setQueue] = useState<DueCard[]>([]);
+  const [rawQueue, setRawQueue] = useState<DueCard[]>([]);
+  const [stats, setStats] = useState<Map<string, CardStats>>(new Map());
   const [loaded, setLoaded] = useState(false);
   const [index, setIndex] = useState(0);
   const [mode, setMode] = useState<'en' | 'ru' | 'both'>('en');
   const [autoAdvance, setAutoAdvance] = useState(false);
   const [autoAdvanceText, setAutoAdvanceText] = useState('5');
+  const [sortKey, setSortKey] = useState<CardSortKey>('due');
+  const [sortAsc, setSortAsc] = useState(true);
 
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
-    Promise.all([getDeck(id), listDueCards(id)]).then(([nextDeck, due]) => {
-      if (cancelled) return;
-      setDeck(nextDeck);
-      setQueue(due);
-      setLoaded(true);
-    }).catch(() => {
+    Promise.all([getDeck(id), listDueCards(id), listCardStatsForDeck(id)]).then(
+      ([nextDeck, due, deckStats]) => {
+        if (cancelled) return;
+        setDeck(nextDeck);
+        setStats(new Map(deckStats.map((s) => [s.card_id, s])));
+        setRawQueue(due);
+        setLoaded(true);
+      },
+    ).catch(() => {
       // Loading errors leave the empty state below.
     });
     return () => {
@@ -55,7 +63,13 @@ export default function RecallScreen() {
     };
   }, [id]);
 
-  const current = queue[index] ?? null;
+  // Re-order all due cards by the chosen key. Nothing is pulled in that
+  // isn't already due — the user's schedule is respected.
+  const sortedQueue = useMemo(() => {
+    return sortCards(rawQueue, stats, sortKey, sortAsc);
+  }, [rawQueue, stats, sortKey, sortAsc]);
+
+  const current = sortedQueue[index] ?? null;
   const currentId = current?.id;
   const russian = current?.front ?? '';
   const english = current ? toSpokenEnglish(current.back) : '';
@@ -107,9 +121,41 @@ export default function RecallScreen() {
   }, [autoAdvance, autoAdvanceText, currentId]);
 
   function onRetry() {
-    setQueue((prev) => shuffle(prev));
+    setRawQueue((prev) => shuffle(prev));
     setIndex(0);
+    setSortKey('due');
+    setSortAsc(true);
   }
+
+  function onSortPress(key: CardSortKey) {
+    if (key === sortKey) {
+      setSortAsc((v) => !v);
+    } else {
+      setSortKey(key);
+      setSortAsc(CARD_SORT_DEFAULT_ASC[key]);
+    }
+  }
+
+  // Pre-render sort chips outside JSX to keep the expression simple.
+  const sortChips = CARD_SORT_OPTIONS.map((o) => {
+    const active = o.key === sortKey;
+    return (
+      <Pressable
+        key={o.key}
+        onPress={() => onSortPress(o.key)}
+        style={[
+          styles.chip,
+          { backgroundColor: active ? theme.tint : theme.backgroundSelected },
+        ]}>
+        <ThemedText
+          type="smallBold"
+          style={{ color: active ? '#ffffff' : theme.text }}>
+          {o.label}
+          {active ? (sortAsc ? ' ▲' : ' ▼') : ''}
+        </ThemedText>
+      </Pressable>
+    );
+  });
 
   if (!loaded) {
     return (
@@ -119,7 +165,7 @@ export default function RecallScreen() {
     );
   }
 
-  if (queue.length === 0) {
+  if (sortedQueue.length === 0) {
     return (
       <Screen>
         <ThemedText type="subtitle">Recall drill</ThemedText>
@@ -134,7 +180,7 @@ export default function RecallScreen() {
       <Screen>
         <ThemedText type="subtitle">Drill complete</ThemedText>
         <CardBlock>
-          <ThemedText type="title">{queue.length}</ThemedText>
+          <ThemedText type="title">{sortedQueue.length}</ThemedText>
           <ThemedText themeColor="textSecondary">words practiced</ThemedText>
         </CardBlock>
         <UiButton label="Retry" onPress={onRetry} />
@@ -146,8 +192,19 @@ export default function RecallScreen() {
   return (
     <Screen>
       <ThemedText type="small" themeColor="textSecondary" style={styles.counter}>
-        {deck?.name ?? 'Drill'} · {index + 1} of {queue.length}
+        {deck?.name ?? 'Drill'} · {index + 1} of {sortedQueue.length}
       </ThemedText>
+      {sortedQueue.length > 0 && (
+        <CardBlock>
+          <ThemedText type="smallBold">Order by</ThemedText>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.sortRow}>
+            {sortChips}
+          </ScrollView>
+        </CardBlock>
+      )}
       <ThemedText type="small" themeColor="textSecondary" style={styles.counter}>
         Say the meaning out loud
       </ThemedText>
@@ -255,5 +312,14 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.two,
     textAlign: 'center',
     fontSize: 16,
+  },
+  sortRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  chip: {
+    borderRadius: 16,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
   },
 });

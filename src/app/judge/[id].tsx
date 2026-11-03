@@ -1,16 +1,23 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
-import { Pressable, StyleSheet } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet } from 'react-native';
 
 import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
 import { UiButton } from '@/components/ui-button';
 import { CardBlock } from '@/components/card-block';
 import { useTheme } from '@/hooks/use-theme';
-import { getDeck, listDueCards, listEntriesForDeck, reviewCard } from '@/db/queries';
+import {
+  getDeck,
+  listCardStatsForDeck,
+  listDueCards,
+  listEntriesForDeck,
+  reviewCard,
+} from '@/db/queries';
+import type { CardStats, DeckEntry } from '@/db/queries';
 import type { Deck, DueCard, FaceResponse } from '@/db/types';
-import type { DeckEntry } from '@/db/queries';
 import { useDatabase } from '@/providers/database-provider';
+import { sortCards, type CardSortKey, CARD_SORT_DEFAULT_ASC, CARD_SORT_OPTIONS } from '@/lib/card-sort';
 import { speakRussian, stopSpeech } from '@/lib/speech';
 
 function elapsedSince(shownAt: { current: number }): number {
@@ -44,12 +51,15 @@ export default function JudgeScreen() {
   const theme = useTheme();
   const { refresh, revision } = useDatabase();
   const [deck, setDeck] = useState<Deck | null>(null);
-  const [queue, setQueue] = useState<DueCard[]>([]);
+  const [rawQueue, setRawQueue] = useState<DueCard[]>([]);
+  const [stats, setStats] = useState<Map<string, CardStats>>(new Map());
   const [entries, setEntries] = useState<DeckEntry[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [total, setTotal] = useState(0);
   const [picked, setPicked] = useState<'correct' | 'wrong' | 'dont_know' | null>(null);
   const [score, setScore] = useState(0);
+  const [sortKey, setSortKey] = useState<CardSortKey>('due');
+  const [sortAsc, setSortAsc] = useState(true);
   const advanceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shownAt = useRef<number>(0);
   const mountedRef = useRef<boolean>(false);
@@ -62,14 +72,16 @@ export default function JudgeScreen() {
     mountedRef.current = true;
     let cancelled = false;
     (async () => {
-      const [nextDeck, due, deckEntries] = await Promise.all([
+      const [nextDeck, due, deckEntries, deckStats] = await Promise.all([
         getDeck(id),
         listDueCards(id),
         listEntriesForDeck(id),
+        listCardStatsForDeck(id),
       ]);
       if (cancelled) return;
       setDeck(nextDeck);
-      setQueue(due);
+      setStats(new Map(deckStats.map((s) => [s.card_id, s])));
+      setRawQueue(due);
       setEntries(deckEntries);
       if (!firstLoadRef.current) {
         firstLoadRef.current = true;
@@ -87,7 +99,13 @@ export default function JudgeScreen() {
     };
   }, [id, revision]);
 
-  const current = queue[0] ?? null;
+  // Re-order all due cards by the chosen key. Nothing is pulled in that
+  // isn't already due — the user's schedule is respected.
+  const sortedQueue = useMemo(() => {
+    return sortCards(rawQueue, stats, sortKey, sortAsc);
+  }, [rawQueue, stats, sortKey, sortAsc]);
+
+  const current = sortedQueue[0] ?? null;
   const currentEntryId = current?.entry_id;
   const spokenFront = current?.front ?? '';
   const correctGloss =
@@ -168,7 +186,7 @@ export default function JudgeScreen() {
     advanceTimer.current = setTimeout(() => {
       if (!mountedRef.current) return;
       setPicked(null);
-      setQueue((cards) => cards.filter((c) => c.id !== done.id));
+      setRawQueue((cards) => cards.filter((c) => c.id !== done.id));
       refresh();
     }, 900);
   }
@@ -199,12 +217,42 @@ export default function JudgeScreen() {
       picked === 'correct' ? shown?.isCorrect : picked === 'wrong' ? !shown?.isCorrect : false;
     const miss = !judgedRight;
     setPicked(null);
-    setQueue((cards) => {
+    setRawQueue((cards) => {
       const rest = cards.filter((c) => c.id !== done.id);
       return miss ? [...rest, done] : rest;
     });
     refresh();
   }
+
+  function onSortPress(key: CardSortKey) {
+    if (key === sortKey) {
+      setSortAsc((v) => !v);
+    } else {
+      setSortKey(key);
+      setSortAsc(CARD_SORT_DEFAULT_ASC[key]);
+    }
+  }
+
+  // Pre-render sort chips outside JSX to keep the expression simple.
+  const sortChips = CARD_SORT_OPTIONS.map((o) => {
+    const active = o.key === sortKey;
+    return (
+      <Pressable
+        key={o.key}
+        onPress={() => onSortPress(o.key)}
+        style={[
+          styles.chip,
+          { backgroundColor: active ? theme.tint : theme.backgroundSelected },
+        ]}>
+        <ThemedText
+          type="smallBold"
+          style={{ color: active ? '#ffffff' : theme.text }}>
+          {o.label}
+          {active ? (sortAsc ? ' ▲' : ' ▼') : ''}
+        </ThemedText>
+      </Pressable>
+    );
+  });
 
   if (!loaded) {
     return (
@@ -254,8 +302,19 @@ export default function JudgeScreen() {
   return (
     <Screen>
       <ThemedText type="small" themeColor="textSecondary" style={styles.counter}>
-        {deck?.name ?? 'Drill'} · {queue.length} left · score {score}
+        {deck?.name ?? 'Drill'} · {sortedQueue.length} left · score {score}
       </ThemedText>
+      {sortedQueue.length > 0 && (
+        <CardBlock>
+          <ThemedText type="smallBold">Order by</ThemedText>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.sortRow}>
+            {sortChips}
+          </ScrollView>
+        </CardBlock>
+      )}
       <Pressable onPress={() => void speakRussian(spokenFront)}>
         <ThemedText type="title" style={styles.wordText}>
           {spokenFront}
@@ -316,5 +375,14 @@ const styles = StyleSheet.create({
   result: {
     textAlign: 'center',
     minHeight: 20,
+  },
+  sortRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  chip: {
+    borderRadius: 16,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
   },
 });

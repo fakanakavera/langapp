@@ -11,6 +11,7 @@ import { UiButton } from '@/components/ui-button';
 import {
   createBook,
   deleteBook,
+  getBookMinTranslationTier,
   listBookUnknownForms,
   listBookWordForms,
   listBooks,
@@ -32,19 +33,30 @@ export default function BooksScreen() {
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
-      Promise.all([listBooks(), listBookWordForms(), listBookUnknownForms()]).then(
-        ([rows, forms, unknown]) => {
+      (async () => {
+        try {
+          // Book progress follows the same tier rule as the reader: only
+          // deck words at or above the configured tier count as "in decks".
+          const [rows, tier, unknown] = await Promise.all([
+            listBooks(),
+            getBookMinTranslationTier(),
+            listBookUnknownForms(),
+          ]);
           if (cancelled) return;
           setBooks(rows);
+          const forms = await listBookWordForms(tier);
+          if (cancelled) return;
           setKnownWordForms(forms);
           setUnknownForms(unknown);
-        },
-        (error: unknown) => {
+        } catch (error: unknown) {
           if (!cancelled) {
-            Alert.alert('Could not load books', error instanceof Error ? error.message : String(error));
+            Alert.alert(
+              'Could not load books',
+              error instanceof Error ? error.message : String(error),
+            );
           }
-        },
-      );
+        }
+      })();
       return () => {
         cancelled = true;
       };

@@ -21,7 +21,9 @@ import { nowIso, toIso } from '@/lib/dates';
 import { createId } from '@/lib/id';
 import { normalizeRussian, stripAccents } from '@/morphology/dictionary';
 import {
+  MAX_MASTERY_TIER,
   MASTERY_FREE_REVIEW_TIER,
+  MASTERY_GRADUATION_TIER,
   masteryIntervalMs,
   masteryTierAfterQuiz,
 } from '@/lib/mastery';
@@ -97,10 +99,12 @@ export async function listDeckSummaries(): Promise<DeckSummary[]> {
   return db.getAllAsync<DeckSummary>(
     `SELECT d.*,
             (SELECT COUNT(*) FROM cards c WHERE c.deck_id = d.id) AS card_count,
-            (SELECT COUNT(*) FROM cards c WHERE c.deck_id = d.id AND c.due <= ?) AS due_count
+            (SELECT COUNT(*) FROM cards c WHERE c.deck_id = d.id AND c.due <= ? AND c.locked = 0) AS due_count,
+            (SELECT COUNT(*) FROM cards c WHERE c.deck_id = d.id AND c.locked = 0 AND c.mastery_tier < ?) AS studying_count
      FROM decks d
      ORDER BY d.updated_at DESC`,
     now,
+    MASTERY_GRADUATION_TIER,
   );
 }
 
@@ -133,18 +137,23 @@ export async function deleteDeck(deckId: string): Promise<void> {
 export async function createDeck(name: string, description = ''): Promise<Deck> {
   const db = getDb();
   const createdAt = nowIso();
+  const studyingLimit = await getStudyingLimit();
   const deck: Deck = {
     id: createId(),
     name: name.trim(),
     description: description.trim(),
+    pos_category: null,
+    studying_limit: studyingLimit,
     created_at: createdAt,
     updated_at: createdAt,
   };
   await db.runAsync(
-    `INSERT INTO decks (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+    `INSERT INTO decks (id, name, description, pos_category, studying_limit, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
     deck.id,
     deck.name,
     deck.description,
+    deck.pos_category,
+    deck.studying_limit,
     deck.created_at,
     deck.updated_at,
   );
@@ -160,7 +169,7 @@ export async function listDueCards(deckId?: string): Promise<DueCard[]> {
        FROM cards c
        JOIN entries e ON e.id = c.entry_id
        JOIN decks d ON d.id = c.deck_id
-       WHERE c.deck_id = ? AND c.due <= ?
+       WHERE c.deck_id = ? AND c.due <= ? AND c.locked = 0
        ORDER BY c.due ASC`,
       deckId,
       now,
@@ -172,7 +181,7 @@ export async function listDueCards(deckId?: string): Promise<DueCard[]> {
      FROM cards c
      JOIN entries e ON e.id = c.entry_id
      JOIN decks d ON d.id = c.deck_id
-     WHERE c.due <= ?
+     WHERE c.due <= ? AND c.locked = 0
      ORDER BY c.due ASC`,
     now,
   );
@@ -187,7 +196,7 @@ export async function listQuizDueCards(deckId?: string): Promise<DueCard[]> {
          FROM cards c
          JOIN entries e ON e.id = c.entry_id
          JOIN decks d ON d.id = c.deck_id
-         WHERE c.deck_id = ? AND c.quiz_due <= ?
+         WHERE c.deck_id = ? AND c.quiz_due <= ? AND c.locked = 0
          ORDER BY c.quiz_due ASC`,
         deckId,
         now,
@@ -197,7 +206,7 @@ export async function listQuizDueCards(deckId?: string): Promise<DueCard[]> {
          FROM cards c
          JOIN entries e ON e.id = c.entry_id
          JOIN decks d ON d.id = c.deck_id
-         WHERE c.quiz_due <= ?
+         WHERE c.quiz_due <= ? AND c.locked = 0
          ORDER BY c.quiz_due ASC`,
         now,
       );
@@ -351,6 +360,14 @@ export async function addVocabulary(input: {
     created_at: createdAt,
   };
 
+  // New cards start locked. They are unlocked by the unlock scheduler when
+  // a studying slot frees up. unlock_order is sequential within the deck.
+  const maxOrderRow = await db.getFirstAsync<{ max_order: number }>(
+    'SELECT COALESCE(MAX(unlock_order), 0) AS max_order FROM cards WHERE deck_id = ?',
+    input.deckId,
+  );
+  const unlockOrder = Number(maxOrderRow?.max_order ?? 0) + 1;
+
   const card: CardRow = {
     id: createId(),
     deck_id: input.deckId,
@@ -372,6 +389,8 @@ export async function addVocabulary(input: {
     last_review: null,
     review_face: 1,
     review_history: [],
+    locked: 1,
+    unlock_order: unlockOrder,
     created_at: createdAt,
   };
 
@@ -405,8 +424,8 @@ export async function addVocabulary(input: {
       `INSERT INTO cards (
         id, deck_id, entry_id, card_type, front, back,
         due, stability, difficulty, elapsed_days, scheduled_days, learning_steps,
-        reps, lapses, state, mastery_tier, quiz_due, last_review, review_face, review_history, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`,
+        reps, lapses, state, mastery_tier, quiz_due, last_review, review_face, review_history, locked, unlock_order, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       card.id,
       card.deck_id,
       card.entry_id,
@@ -424,8 +443,11 @@ export async function addVocabulary(input: {
       card.state,
       card.mastery_tier,
       card.quiz_due,
+      card.last_review,
       card.review_face,
       JSON.stringify(card.review_history),
+      card.locked,
+      card.unlock_order,
       card.created_at,
     );
 
@@ -493,7 +515,7 @@ export async function resetDeckStats(deckId: string): Promise<number> {
       `UPDATE cards SET
          due = ?, quiz_due = ?, stability = ?, difficulty = ?, elapsed_days = ?, scheduled_days = ?,
          learning_steps = ?, reps = ?, lapses = ?, state = ?, last_review = NULL,
-         mastery_tier = 0, review_face = 1, review_history = '[]'
+         mastery_tier = 0, review_face = 1, review_history = '[]', locked = 1, unlock_order = 0
        WHERE deck_id = ?`,
       fresh.due.toISOString(),
       fresh.due.toISOString(),
@@ -780,6 +802,15 @@ export async function reviewCard(
       );
     }
   });
+
+  // When a card graduates out of the studying stage, unlock the next card(s)
+  // to keep the user's studying limit filled.
+  const justGraduated =
+    card.mastery_tier < MASTERY_GRADUATION_TIER &&
+    masteryTier >= MASTERY_GRADUATION_TIER;
+  if (justGraduated) {
+    await unlockNextCards(card.deck_id);
+  }
 
   return updated;
 }
@@ -1168,19 +1199,34 @@ export type KnownForm = {
   gloss: string;
   entry_id: string;
   deck_name: string;
+  mastery_tier: number;
 };
 
 /**
  * Word forms belonging to cards in any deck, for book lookup and progress.
+ * When `minMasteryTier` is given, only forms whose highest card mastery
+ * tier meets or exceed it are returned — this is what the book reader uses
+ * to decide whether to show a translation (e.g. tier 4+).
  */
-export async function listBookWordForms(): Promise<KnownForm[]> {
-  const rows = await getDb().getAllAsync<any>(
+export async function listBookWordForms(
+  minMasteryTier?: number,
+): Promise<KnownForm[]> {
+  const db = getDb();
+  const tierFilter = minMasteryTier != null
+    ? `HAVING MAX(c.mastery_tier) >= ?`
+    : '';
+  const tierParams = minMasteryTier != null ? [minMasteryTier] : [];
+
+  const rows = await db.getAllAsync<any>(
     `SELECT i.form AS form, e.id AS entry_id, e.lemma AS lemma, e.gloss AS gloss,
-            d.name AS deck_name
+            d.name AS deck_name, MAX(c.mastery_tier) AS mastery_tier
       FROM inflections i
       JOIN entries e ON e.id = i.entry_id
       JOIN cards c ON c.entry_id = e.id
-      JOIN decks d ON d.id = c.deck_id`,
+      JOIN decks d ON d.id = c.deck_id
+      GROUP BY i.form, e.id, e.lemma, e.gloss, d.name
+      ${tierFilter}`,
+    ...tierParams,
   );
   const out: KnownForm[] = rows.map((row) => ({
     form: row.form,
@@ -1188,15 +1234,19 @@ export async function listBookWordForms(): Promise<KnownForm[]> {
     gloss: row.gloss,
     entry_id: row.entry_id,
     deck_name: row.deck_name,
+    mastery_tier: Number(row.mastery_tier ?? 0),
   }));
   // Include dictionary lemmas even when no inflection row spells them exactly.
   const seen = new Set(out.map((r) => r.form));
-  const lemmas = await getDb().getAllAsync<any>(
+  const lemmas = await db.getAllAsync<any>(
     `SELECT e.id AS entry_id, e.lemma AS lemma, e.gloss AS gloss,
-            d.name AS deck_name
+            d.name AS deck_name, MAX(c.mastery_tier) AS mastery_tier
       FROM entries e
       JOIN cards c ON c.entry_id = e.id
-      JOIN decks d ON d.id = c.deck_id`,
+      JOIN decks d ON d.id = c.deck_id
+      GROUP BY e.id, e.lemma, e.gloss, d.name
+      ${tierFilter}`,
+    ...tierParams,
   );
   for (const row of lemmas) {
     const form = normalizeRussian(stripAccents(String(row.lemma)));
@@ -1208,6 +1258,7 @@ export async function listBookWordForms(): Promise<KnownForm[]> {
       gloss: String(row.gloss),
       entry_id: String(row.entry_id),
       deck_name: String(row.deck_name),
+      mastery_tier: Number(row.mastery_tier ?? 0),
     });
   }
   return out;
@@ -1234,10 +1285,13 @@ export async function importDeckPayload(
 
   const db = getDb();
   const now = nowIso();
+  const studyingLimit = await getStudyingLimit();
   const deck: Deck = {
     id: createId(),
     name,
     description: payload.decks[0]?.description ?? '',
+    pos_category: (payload.decks[0] as any)?.pos_category ?? null,
+    studying_limit: studyingLimit,
     created_at: now,
     updated_at: now,
   };
@@ -1257,10 +1311,12 @@ export async function importDeckPayload(
 
   await db.withTransactionAsync(async () => {
     await db.runAsync(
-      `INSERT INTO decks (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO decks (id, name, description, pos_category, studying_limit, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
       deck.id,
       deck.name,
       deck.description,
+      (payload.decks[0] as any)?.pos_category ?? null,
+      deck.studying_limit,
       deck.created_at,
       deck.updated_at,
     );
@@ -1304,12 +1360,13 @@ export async function importDeckPayload(
       if (!entryId) continue;
       const newCardId = createId();
       cardIds.set(card.id, newCardId);
+      const importUnlockOrder = (card as any).unlock_order ?? cardIds.size;
       await db.runAsync(
         `INSERT INTO cards (
           id, deck_id, entry_id, card_type, front, back,
           due, stability, difficulty, elapsed_days, scheduled_days, learning_steps,
-          reps, lapses, state, mastery_tier, quiz_due, last_review, review_face, review_history, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          reps, lapses, state, mastery_tier, quiz_due, last_review, review_face, review_history, locked, unlock_order, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         newCardId,
         deck.id,
         entryId,
@@ -1330,6 +1387,8 @@ export async function importDeckPayload(
         card.last_review ?? null,
         1,
         '[]',
+        1,
+        importUnlockOrder,
         card.created_at ?? now,
       );
     }
@@ -1373,6 +1432,9 @@ export async function importDeckPayload(
       );
     }
   });
+
+  // Cards start locked on import. Unlock the initial studying batch for the new deck.
+  await unlockNextCards(deck.id);
 
   return { deck, entries: entryIds.size, cards: cardIds.size };
 }
@@ -1469,6 +1531,7 @@ export async function restoreBackup(payload: BackupPayload): Promise<void> {
   }
 
   const db = getDb();
+  const studyingLimit = await getStudyingLimit();
   await db.withTransactionAsync(async () => {
     await db.execAsync(`
       DELETE FROM reviews;
@@ -1481,10 +1544,12 @@ export async function restoreBackup(payload: BackupPayload): Promise<void> {
 
     for (const deck of payload.decks) {
       await db.runAsync(
-        `INSERT INTO decks (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO decks (id, name, description, pos_category, studying_limit, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
         deck.id,
         deck.name,
         deck.description,
+        (deck as any).pos_category ?? null,
+        studyingLimit,
         deck.created_at,
         deck.updated_at,
       );
@@ -1523,8 +1588,8 @@ export async function restoreBackup(payload: BackupPayload): Promise<void> {
         `INSERT INTO cards (
           id, deck_id, entry_id, card_type, front, back,
           due, stability, difficulty, elapsed_days, scheduled_days, learning_steps,
-          reps, lapses, state, mastery_tier, quiz_due, last_review, review_face, review_history, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          reps, lapses, state, mastery_tier, quiz_due, last_review, review_face, review_history, locked, unlock_order, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         card.id,
         card.deck_id,
         card.entry_id,
@@ -1545,6 +1610,8 @@ export async function restoreBackup(payload: BackupPayload): Promise<void> {
         card.last_review,
         reviewFace,
         JSON.stringify(reviewHistory),
+        (card as any).locked ?? 1,
+        (card as any).unlock_order ?? 0,
         card.created_at,
       );
     }
@@ -1710,6 +1777,69 @@ export async function getReviewActivity(days = 14): Promise<DailyCount[]> {
   return out;
 }
 
+/**
+ * Total cards that have "graduated" — reached mastery tier 4+ (the
+ * studying limit no longer applies to them). These are the words the
+ * user has effectively learned.
+ */
+export async function countLearnedWords(): Promise<number> {
+  const row = await getDb().getFirstAsync<{ count: number }>(
+    'SELECT COUNT(*) AS count FROM cards WHERE mastery_tier >= ?',
+    MASTERY_GRADUATION_TIER,
+  );
+  return row?.count ?? 0;
+}
+
+/**
+ * Cards that reached mastery tier 4+ and had a review within the last 7
+ * days — a practical proxy for "newly learned this week".
+ */
+export async function countLearnedThisWeek(): Promise<number> {
+  const db = getDb();
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - 7);
+  const row = await db.getFirstAsync<{ count: number }>(
+    `SELECT COUNT(*) AS count FROM cards
+     WHERE mastery_tier >= ? AND last_review >= ?`,
+    MASTERY_GRADUATION_TIER,
+    cutoff.toISOString(),
+  );
+  return row?.count ?? 0;
+}
+
+export type Tier4Retention = {
+  totalReviews: number;
+  nonMissedReviews: number;
+  /** Share of reviews on tier 4+ cards that were not misses (Again). */
+  ratio: number;
+};
+
+/**
+ * Of all reviews on cards that are currently tier 4+, how many were not
+ * misses? 1.0 (100%) is perfect retention — every review on a learned
+ * word was successful.
+ */
+export async function getTier4Retention(): Promise<Tier4Retention> {
+  const rows = await getDb().getAllAsync<any>(
+    `SELECT r.rating
+     FROM reviews r
+     JOIN cards c ON c.id = r.card_id
+     WHERE c.mastery_tier >= ?`,
+    MASTERY_GRADUATION_TIER,
+  );
+  let total = 0;
+  let notMissed = 0;
+  for (const row of rows) {
+    total += 1;
+    if (row.rating !== Rating.Again) notMissed += 1;
+  }
+  return {
+    totalReviews: total,
+    nonMissedReviews: notMissed,
+    ratio: total > 0 ? notMissed / total : 1,
+  };
+}
+
 export const DEFAULT_DAILY_GOAL = 20;
 
 export async function getDailyGoal(): Promise<number> {
@@ -1733,6 +1863,167 @@ export async function setDailyGoal(goal: number): Promise<number> {
     String(clamped),
   ]);
   return clamped;
+}
+
+export const DEFAULT_STUDYING_LIMIT = 60;
+export const DEFAULT_BOOK_MIN_TRANSLATION_TIER = MASTERY_GRADUATION_TIER;
+
+export async function getStudyingLimit(): Promise<number> {
+  try {
+    const row = await getDb().getFirstAsync<{ value: string }>(
+      'SELECT value FROM meta WHERE key = ?',
+      'studying_limit',
+    );
+    const parsed = Number.parseInt(row?.value ?? '', 10);
+    if (Number.isFinite(parsed)) return Math.max(1, Math.min(1000, parsed));
+  } catch {
+    // Fall through to the default.
+  }
+  return DEFAULT_STUDYING_LIMIT;
+}
+
+export async function setStudyingLimit(limit: number): Promise<number> {
+  const clamped = Math.max(1, Math.min(1000, Math.floor(limit)));
+  const db = getDb();
+  await db.withTransactionAsync(async () => {
+    await db.runAsync(
+      'INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)',
+      'studying_limit',
+      String(clamped),
+    );
+    await db.runAsync('UPDATE decks SET studying_limit = ?', clamped);
+  });
+  return clamped;
+}
+
+export async function getBookMinTranslationTier(): Promise<number> {
+  try {
+    const row = await getDb().getFirstAsync<{ value: string }>(
+      'SELECT value FROM meta WHERE key = ?',
+      'book_min_translation_tier',
+    );
+    const parsed = row ? parseInt(row.value, 10) : NaN;
+    if (Number.isFinite(parsed))
+      return Math.max(0, Math.min(MAX_MASTERY_TIER, parsed));
+  } catch {
+    // Fall through to default.
+  }
+  return DEFAULT_BOOK_MIN_TRANSLATION_TIER;
+}
+
+export async function setBookMinTranslationTier(tier: number): Promise<number> {
+  const clamped = Math.max(0, Math.min(MAX_MASTERY_TIER, Math.floor(tier)));
+  await getDb().runAsync('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', [
+    'book_min_translation_tier',
+    String(clamped),
+  ]);
+  return clamped;
+}
+
+/**
+ * Count active, not-yet-graduated cards for one deck.
+ */
+export async function countStudyingCards(deckId: string): Promise<number> {
+  const row = await getDb().getFirstAsync<{ count: number }>(
+    `SELECT COUNT(*) AS count FROM cards
+     WHERE deck_id = ? AND locked = 0 AND mastery_tier < ?`,
+    deckId,
+    MASTERY_GRADUATION_TIER,
+  );
+  return row?.count ?? 0;
+}
+
+/**
+ * Keep active studying cards within a deck's limit, then fill open slots.
+ * When reducing the limit, the newest active cards are locked first; when
+ * increasing it or graduating cards, the next locked cards are unlocked.
+ * Returns how many cards were unlocked.
+ */
+export async function unlockNextCards(preferDeckId?: string): Promise<number> {
+  const db = getDb();
+  const limit = await getStudyingLimit();
+  const deckIds = preferDeckId
+    ? [preferDeckId]
+    : (
+        await db.getAllAsync<{ id: string }>('SELECT id FROM decks ORDER BY created_at ASC')
+      ).map((deck) => deck.id);
+  let totalUnlocked = 0;
+
+  for (const deckId of deckIds) {
+    let current = await countStudyingCards(deckId);
+    if (current > limit) {
+      const excess = await db.getAllAsync<{ id: string }>(
+        `SELECT id FROM cards
+         WHERE deck_id = ? AND locked = 0 AND mastery_tier < ?
+         ORDER BY unlock_order DESC
+         LIMIT ?`,
+        deckId,
+        MASTERY_GRADUATION_TIER,
+        current - limit,
+      );
+      if (excess.length > 0) {
+        await db.runAsync(
+          `UPDATE cards SET locked = 1 WHERE id IN (${excess.map(() => '?').join(',')})`,
+          ...excess.map((row) => row.id),
+        );
+        current -= excess.length;
+      }
+    }
+    const slots = limit - current;
+    if (slots <= 0) continue;
+
+    const rows = await db.getAllAsync<{ id: string }>(
+      `SELECT id FROM cards
+       WHERE deck_id = ? AND locked = 1
+       ORDER BY unlock_order ASC
+       LIMIT ?`,
+      deckId,
+      slots,
+    );
+    if (rows.length === 0) continue;
+
+    const ids = rows.map((row) => row.id);
+    await db.runAsync(
+      `UPDATE cards SET locked = 0, due = ? WHERE id IN (${ids.map(() => '?').join(',')})`,
+      nowIso(),
+      ...ids,
+    );
+    totalUnlocked += rows.length;
+  }
+  return totalUnlocked;
+}
+
+/**
+ * List all cards currently in the active studying stage (unlocked and
+ * below graduation tier), optionally scoped to one deck.
+ */
+export type StudyingCard = DueCard;
+
+export async function listStudyingCards(deckId?: string): Promise<StudyingCard[]> {
+  const db = getDb();
+  if (deckId) {
+    const rows = await db.getAllAsync<any>(
+      `SELECT c.*, e.lemma, e.gloss, d.name AS deck_name
+       FROM cards c
+       JOIN entries e ON e.id = c.entry_id
+       JOIN decks d ON d.id = c.deck_id
+       WHERE c.deck_id = ? AND c.locked = 0 AND c.mastery_tier < ?
+       ORDER BY c.unlock_order ASC`,
+      deckId,
+      MASTERY_GRADUATION_TIER,
+    );
+    return rows.map(mapCardRow) as StudyingCard[];
+  }
+  const rows = await db.getAllAsync<any>(
+    `SELECT c.*, e.lemma, e.gloss, d.name AS deck_name
+     FROM cards c
+     JOIN entries e ON e.id = c.entry_id
+     JOIN decks d ON d.id = c.deck_id
+     WHERE c.locked = 0 AND c.mastery_tier < ?
+     ORDER BY d.created_at ASC, c.unlock_order ASC`,
+    MASTERY_GRADUATION_TIER,
+  );
+  return rows.map(mapCardRow) as StudyingCard[];
 }
 
 /**

@@ -229,6 +229,8 @@ export function csvToBackupPayload(
       id: 'csv-deck-1',
       name: 'CSV import',
       description: '',
+      pos_category: null,
+      studying_limit: 60,
       created_at: nowIso,
       updated_at: nowIso,
     },
@@ -296,6 +298,8 @@ export function csvToBackupPayload(
         last_review: null,
         review_face: 1,
         review_history: [],
+        locked: 1,
+        unlock_order: counter + 1,
         created_at: nowIso,
       });
     }

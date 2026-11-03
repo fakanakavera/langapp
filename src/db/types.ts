@@ -2,6 +2,8 @@ export type Deck = {
   id: string;
   name: string;
   description: string;
+  pos_category: string | null;
+  studying_limit: number;
   created_at: string;
   updated_at: string;
 };
@@ -63,6 +65,8 @@ export type CardRow = {
   last_review: string | null;
   review_face: ReviewFace;
   review_history: FaceResponse[];
+  locked: number;
+  unlock_order: number;
   created_at: string;
 };
 
@@ -126,6 +130,7 @@ export type UserDictionaryEntry = {
 export type DeckSummary = Deck & {
   card_count: number;
   due_count: number;
+  studying_count: number;
 };
 
 export type BackupPayload = {

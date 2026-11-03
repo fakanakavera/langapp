@@ -186,6 +186,48 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
     `);
   }
 
+  // --- New columns: decks.pos_category ---
+  const decks = await db.getAllAsync<{ name: string }>(
+    "PRAGMA table_info(decks)"
+  );
+  const deckColumns = new Set(decks.map((c) => c.name));
+  if (!deckColumns.has('pos_category')) {
+    await db.execAsync(`
+      ALTER TABLE decks ADD COLUMN pos_category TEXT;
+    `);
+  }
+  if (!deckColumns.has('studying_limit')) {
+    const oldLimit = await db.getFirstAsync<{ value: string }>(
+      "SELECT value FROM meta WHERE key = 'studying_limit'",
+    );
+    const parsedLimit = oldLimit ? Number.parseInt(oldLimit.value, 10) : NaN;
+    const migratedLimit = Number.isFinite(parsedLimit)
+      ? Math.max(1, Math.min(1000, parsedLimit))
+      : 60;
+    await db.execAsync(`
+      ALTER TABLE decks ADD COLUMN studying_limit INTEGER NOT NULL DEFAULT 60;
+    `);
+    if (Number.isFinite(parsedLimit)) {
+      await db.runAsync('UPDATE decks SET studying_limit = ?', migratedLimit);
+    }
+  }
+
+  // --- New columns: cards.locked, cards.unlock_order ---
+  const cardCols2 = await db.getAllAsync<{ name: string }>(
+    "PRAGMA table_info(cards)"
+  );
+  const cardColumnSet2 = new Set(cardCols2.map((c) => c.name));
+  if (!cardColumnSet2.has('locked')) {
+    await db.execAsync(`
+      ALTER TABLE cards ADD COLUMN locked INTEGER NOT NULL DEFAULT 1;
+    `);
+  }
+  if (!cardColumnSet2.has('unlock_order')) {
+    await db.execAsync(`
+      ALTER TABLE cards ADD COLUMN unlock_order INTEGER NOT NULL DEFAULT 0;
+    `);
+  }
+
   // Reader books + tapped unknown words (fresh installs get these from
   // SCHEMA_SQL; older installs pick them up here).
   await db.execAsync(`

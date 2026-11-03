@@ -2,7 +2,13 @@ import * as DocumentPicker from 'expo-document-picker';
 import { File, Paths } from 'expo-file-system';
 import * as Sharing from 'expo-sharing';
 
-import { dumpBackup, deckNameExists, dumpDeckBackup, importDeckPayload } from '@/db/queries';
+import {
+  dumpBackup,
+  deckNameExists,
+  dumpDeckBackup,
+  importDeckPayload,
+  listStudyingCards,
+} from '@/db/queries';
 import type { BackupPayload } from '@/db/types';
 import { csvToBackupPayload, parseCsvRecords } from '@/lib/csv-import';
 import { nowIso } from '@/lib/dates';
@@ -75,7 +81,9 @@ export async function exportDeckBackup(deckId: string): Promise<void> {
  */
 export async function importDeckFile(
   deckName: string,
-): Promise<{ deckName: string; entries: number; cards: number; skipped: number } | null> {
+): Promise<
+  { deckName: string; entries: number; cards: number; studying: number; skipped: number } | null
+> {
   const name = deckName.trim();
   if (!name) {
     throw new Error('Name the new deck first.');
@@ -128,5 +136,6 @@ export async function importDeckFile(
     parsed = json;
   }
   const { deck, entries, cards } = await importDeckPayload(parsed, name);
-  return { deckName: deck.name, entries, cards, skipped };
+  const studying = await listStudyingCards(deck.id);
+  return { deckName: deck.name, entries, cards, studying: studying.length, skipped };
 }

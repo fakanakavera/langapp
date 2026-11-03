@@ -11,6 +11,8 @@ CREATE TABLE IF NOT EXISTS decks (
   id TEXT PRIMARY KEY NOT NULL,
   name TEXT NOT NULL,
   description TEXT NOT NULL DEFAULT '',
+  pos_category TEXT CHECK (pos_category IN ('noun', 'verb', 'adjective', 'adverb', 'pronoun', 'preposition', 'conjunction', 'interjection', 'number')),
+  studying_limit INTEGER NOT NULL DEFAULT 60,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -58,6 +60,8 @@ CREATE TABLE IF NOT EXISTS cards (
   last_review TEXT,
   review_face INTEGER NOT NULL DEFAULT 1,
   review_history TEXT NOT NULL DEFAULT '[]',
+  locked INTEGER NOT NULL DEFAULT 1,
+  unlock_order INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   FOREIGN KEY (deck_id) REFERENCES decks(id) ON DELETE CASCADE,
   FOREIGN KEY (entry_id) REFERENCES entries(id) ON DELETE CASCADE
@@ -122,4 +126,55 @@ CREATE TABLE IF NOT EXISTS user_dictionary (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_user_dictionary_lemma ON user_dictionary(lemma);
+
+CREATE TABLE IF NOT EXISTS money_categories (
+  id TEXT PRIMARY KEY NOT NULL,
+  type TEXT NOT NULL CHECK (type IN ('income', 'expense')),
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (type, name)
+);
+
+CREATE TABLE IF NOT EXISTS money_transactions (
+  id TEXT PRIMARY KEY NOT NULL,
+  type TEXT NOT NULL CHECK (type IN ('income', 'expense')),
+  category_id TEXT,
+  amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+  description TEXT NOT NULL DEFAULT '',
+  occurred_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY (category_id) REFERENCES money_categories(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_money_transactions_date
+  ON money_transactions(occurred_at);
+CREATE INDEX IF NOT EXISTS idx_money_transactions_category
+  ON money_transactions(category_id);
+
+CREATE TABLE IF NOT EXISTS money_recurring (
+  id TEXT PRIMARY KEY NOT NULL,
+  type TEXT NOT NULL CHECK (type IN ('income', 'expense')),
+  category_id TEXT,
+  amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+  description TEXT NOT NULL DEFAULT '',
+  frequency TEXT NOT NULL CHECK (frequency IN ('monthly_day', 'every_days', 'weekly')),
+  day_of_month INTEGER,
+  interval_days INTEGER,
+  weekday INTEGER,
+  start_date TEXT NOT NULL,
+  end_date TEXT,
+  FOREIGN KEY (category_id) REFERENCES money_categories(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS money_budgets (
+  id TEXT PRIMARY KEY NOT NULL,
+  category_id TEXT NOT NULL,
+  amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
+  UNIQUE (category_id)
+);
+
+CREATE TABLE IF NOT EXISTS money_settings (
+  key TEXT PRIMARY KEY NOT NULL,
+  value TEXT NOT NULL
+);
 `;

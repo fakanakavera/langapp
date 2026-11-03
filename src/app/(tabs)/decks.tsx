@@ -124,7 +124,7 @@ function DeckRow({
       <CardBlock onPress={onOpen}>
         <ThemedText type="smallBold">{deck.name}</ThemedText>
         <ThemedText type="small" themeColor="textSecondary">
-          {deck.due_count} due · {deck.card_count} cards
+          {deck.due_count} due · {deck.studying_count}/{deck.studying_limit} studying · {deck.card_count} total
         </ThemedText>
       </CardBlock>
     </Swipeable>

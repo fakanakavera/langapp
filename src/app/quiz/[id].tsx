@@ -1,6 +1,6 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
-import { Alert, Pressable, StyleSheet, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { CardBlock } from '@/components/card-block';
 import { Screen } from '@/components/screen';
@@ -9,9 +9,15 @@ import { UiButton } from '@/components/ui-button';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
 import { useDatabase } from '@/providers/database-provider';
-import { getDeck, listEntriesForDeck, listQuizDueCards, reviewCard } from '@/db/queries';
+import {
+  getDeck,
+  listCardStatsForDeck,
+  listEntriesForDeck,
+  listQuizDueCards,
+  reviewCard,
+} from '@/db/queries';
 import type { Deck, DueCard, FaceResponse } from '@/db/types';
-import type { DeckEntry } from '@/db/queries';
+import type { CardStats, DeckEntry } from '@/db/queries';
 import { pickDistractorGlosses, createAiSession, closeAiSession } from '@/lib/distractors';
 import { speakRussian, stopSpeech } from '@/lib/speech';
 
@@ -69,6 +75,67 @@ function elapsedSince(shownAt: { current: number }): number {
 // correct option still highlights green during feedback with no red pick.
 const DONT_KNOW_OPTION: QuizOption = { gloss: '\0dont_know' };
 
+type QuizSortKey = 'due' | 'streak' | 'accuracy' | 'reviews' | 'name';
+
+const QUIZ_SORT_OPTIONS: { key: QuizSortKey; label: string }[] = [
+  { key: 'due', label: 'Due order' },
+  { key: 'streak', label: 'Highest combo' },
+  { key: 'accuracy', label: 'Highest accuracy' },
+  { key: 'reviews', label: 'Most practiced' },
+  { key: 'name', label: 'A → Z' },
+];
+
+/** Default direction per key so "highest" wins first for streak/accuracy. */
+const QUIZ_SORT_DEFAULT_ASC: Record<QuizSortKey, boolean> = {
+  due: true,
+  streak: false,
+  accuracy: false,
+  reviews: false,
+  name: true,
+};
+
+/**
+ * Re-order only the cards that are already due. Never pulls non-due cards
+ * into the rotation, so nothing is forced to reappear before its time.
+ * Unreviewed cards sink to the bottom for accuracy (no evidence yet).
+ */
+function sortQuizCards(
+  cards: DueCard[],
+  stats: Map<string, CardStats>,
+  key: QuizSortKey,
+  asc: boolean,
+): DueCard[] {
+  const dir = asc ? 1 : -1;
+  return [...cards].sort((a, b) => {
+    switch (key) {
+      case 'due':
+        return dir * (new Date(a.quiz_due).getTime() - new Date(b.quiz_due).getTime());
+      case 'name':
+        return dir * a.lemma.localeCompare(b.lemma);
+      case 'streak': {
+        const sa = stats.get(a.id)?.streak ?? 0;
+        const sb = stats.get(b.id)?.streak ?? 0;
+        return dir * (sa - sb);
+      }
+      case 'accuracy': {
+        const sa = stats.get(a.id);
+        const sb = stats.get(b.id);
+        const aa = sa && sa.review_count > 0 ? sa.accuracy : null;
+        const ab = sb && sb.review_count > 0 ? sb.accuracy : null;
+        if (aa === null && ab === null) return 0;
+        if (aa === null) return 1;
+        if (ab === null) return -1;
+        return dir * (aa - ab);
+      }
+      case 'reviews': {
+        const sa = stats.get(a.id)?.review_count ?? 0;
+        const sb = stats.get(b.id)?.review_count ?? 0;
+        return dir * (sa - sb);
+      }
+    }
+  });
+}
+
 /**
  * Multiple-choice drill over the deck's due cards. A correct answer is
  * recorded like face 1 "Know" (Easy); a wrong one is "Don't know" (Again).
@@ -82,9 +149,12 @@ export default function QuizScreen() {
   const theme = useTheme();
   const { refresh, revision } = useDatabase();
   const [deck, setDeck] = useState<Deck | null>(null);
-  const [queue, setQueue] = useState<DueCard[]>([]);
+  const [rawQueue, setRawQueue] = useState<DueCard[]>([]);
   const [entries, setEntries] = useState<DeckEntry[]>([]);
+  const [stats, setStats] = useState<Map<string, CardStats>>(new Map());
   const [optionsCache, setOptionsCache] = useState<Record<string, QuizOption[]>>({});
+  const [sortKey, setSortKey] = useState<QuizSortKey>('due');
+  const [sortAsc, setSortAsc] = useState(true);
   const [loaded, setLoaded] = useState(false);
   const [total, setTotal] = useState(0);
   const [picked, setPicked] = useState<QuizOption | null>(null);
@@ -99,10 +169,16 @@ export default function QuizScreen() {
   const mountedRef = useRef<boolean>(false);
   const completedThisSessionRef = useRef<Set<string>>(new Set());
 
+  // Re-order all due cards by the chosen key. Nothing is pulled in that
+  // isn't already due — the user's schedule is respected.
+  const sortedQueue = useMemo(() => {
+    return sortQuizCards(rawQueue, stats, sortKey, sortAsc);
+  }, [rawQueue, stats, sortKey, sortAsc]);
+
   // Mirror the queue for background pre-generation (refs stay out of render).
   useEffect(() => {
-    queueRef.current = queue;
-  });
+    queueRef.current = sortedQueue;
+  }, [sortedQueue]);
 
   // Load deck + quiz-due queue + distractor pool. Re-runs on global refresh so
   // the queue stays in sync (answered cards drop out via rescheduling).
@@ -110,14 +186,16 @@ export default function QuizScreen() {
     if (!id) return;
     let cancelled = false;
     (async () => {
-      const [nextDeck, due, deckEntries] = await Promise.all([
+      const [nextDeck, due, deckEntries, deckStats] = await Promise.all([
         getDeck(id),
         listQuizDueCards(id),
         listEntriesForDeck(id),
+        listCardStatsForDeck(id),
       ]);
       if (cancelled) return;
       setDeck(nextDeck);
-      setQueue(due.filter((card) => !completedThisSessionRef.current.has(card.id)));
+      setStats(new Map(deckStats.map((s) => [s.card_id, s])));
+      setRawQueue(due.filter((card) => !completedThisSessionRef.current.has(card.id)));
       setEntries(deckEntries);
       if (!firstLoadRef.current) {
         firstLoadRef.current = true;
@@ -162,7 +240,7 @@ export default function QuizScreen() {
     };
   }, [id]);
 
-  const current = queue[0] ?? null;
+  const current = sortedQueue[0] ?? null;
   const currentId = current?.id;
   const currentEntryId = current?.entry_id;
   const spokenFront = current?.front ?? '';
@@ -264,7 +342,7 @@ export default function QuizScreen() {
           setPicked(null);
           if (correct) completedThisSessionRef.current.add(done.id);
           // Keep persisted mastery and FSRS values if the card is retried.
-          setQueue((cards) => {
+          setRawQueue((cards) => {
             const rest = cards.filter((c) => c.id !== done.id);
             return correct ? rest : [...rest, { ...done, ...result.updated }];
           });
@@ -304,13 +382,23 @@ export default function QuizScreen() {
             return;
           }
           setPicked(null);
-          setQueue((cards) => [
+          setRawQueue((cards) => [
             ...cards.filter((c) => c.id !== done.id),
             { ...done, ...result.updated },
           ]);
           refresh();
         });
     }, 900);
+  }
+
+  function onSortPress(key: QuizSortKey) {
+    // Tapping the active key flips direction; a new key takes its default.
+    if (key === sortKey) {
+      setSortAsc((v) => !v);
+    } else {
+      setSortKey(key);
+      setSortAsc(QUIZ_SORT_DEFAULT_ASC[key]);
+    }
   }
 
   if (!loaded) {
@@ -351,7 +439,7 @@ export default function QuizScreen() {
   return (
     <Screen>
       <ThemedText type="small" themeColor="textSecondary" style={styles.counter}>
-        {deck?.name ?? 'Quiz'} · {queue.length} left · score {score}
+        {deck?.name ?? 'Quiz'} · {sortedQueue.length} left · score {score}
       </ThemedText>
       <Pressable onPress={() => void speakRussian(spokenFront)}>
         <ThemedText type="title" style={styles.wordText}>
@@ -361,6 +449,34 @@ export default function QuizScreen() {
       <ThemedText type="small" themeColor="textSecondary" style={styles.counter}>
         Quiz mastery: Tier {current.mastery_tier} / 10
       </ThemedText>
+      {sortedQueue.length > 0 && (
+        <CardBlock>
+          <ThemedText type="smallBold">Order by</ThemedText>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.sortRow}>
+            {QUIZ_SORT_OPTIONS.map((o) => {
+              const active = o.key === sortKey;
+              return (
+                <Pressable
+                  key={o.key}
+                  onPress={() => onSortPress(o.key)}
+                  style={[
+                    styles.chip,
+                    { backgroundColor: active ? theme.tint : theme.backgroundSelected },
+                  ]}>
+                  <ThemedText
+                    type="smallBold"
+                    style={{ color: active ? '#ffffff' : theme.text }}>
+                    {o.label}{active ? (sortAsc ? ' ▲' : ' ▼') : ''}
+                  </ThemedText>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </CardBlock>
+      )}
       {!options ? (
         <ThemedText themeColor="textSecondary" style={styles.wordText}>
           Preparing options…
@@ -421,5 +537,14 @@ const styles = StyleSheet.create({
   optionLabel: {
     fontWeight: 600,
     textAlign: 'center',
+  },
+  sortRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  chip: {
+    borderRadius: 16,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
   },
 });

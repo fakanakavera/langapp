@@ -8,6 +8,7 @@ import { UiButton } from '@/components/ui-button';
 import { Spacing } from '@/constants/theme';
 import {
   getBook,
+  getBookMinTranslationTier,
   listBookWordForms,
   listUnknownWords,
   toggleUnknownWord,
@@ -57,10 +58,20 @@ export default function BookScreen() {
     useCallback(() => {
       if (typeof id !== 'string') return;
       let cancelled = false;
-      Promise.all([getBook(id), listBookWordForms(), listUnknownWords(id)]).then(
-        ([nextBook, forms, unknown]) => {
+      (async () => {
+        try {
+          // Words at or above the configured mastery tier stay Russian in
+          // the book; everything below it is translated (when a gloss
+          // exists). Tier 0 keeps every deck word in Russian.
+          const [nextBook, tier, unknown] = await Promise.all([
+            getBook(id),
+            getBookMinTranslationTier(),
+            listUnknownWords(id),
+          ]);
           if (cancelled) return;
           setBook(nextBook);
+          const forms = await listBookWordForms(tier);
+          if (cancelled) return;
           const map = new Map<string, KnownForm>();
           for (const form of forms) {
             const normalized = normalizeBookWord(form.form);
@@ -70,11 +81,10 @@ export default function BookScreen() {
           setDeckForms(new Set(map.keys()));
           setMarks(new Set(unknown.map((w) => w.normalized)));
           setLoaded(true);
-        },
-        () => {
+        } catch {
           if (!cancelled) setLoaded(true);
-        },
-      );
+        }
+      })();
       return () => {
         cancelled = true;
         // Never leave orphaned audio running after leaving the reader.

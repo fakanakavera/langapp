@@ -1,7 +1,7 @@
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import Constants from 'expo-constants';
-import { useEffect, useRef, useState } from 'react';
-import { Platform, StyleSheet, TextInput, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { generateReadingPhrases } from '@/ai/engine';
 import { CardBlock } from '@/components/card-block';
@@ -10,9 +10,11 @@ import { ThemedText } from '@/components/themed-text';
 import { UiButton } from '@/components/ui-button';
 import { Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { getDeck, listDueCards, listExamples, listKnownLemmas } from '@/db/queries';
+import { getDeck, listCardStatsForDeck, listDueCards, listExamples, listKnownLemmas } from '@/db/queries';
+import type { CardStats } from '@/db/queries';
 import type { Deck, DueCard } from '@/db/types';
 import { closeAiSession, createAiSession } from '@/lib/distractors';
+import { sortCards, type CardSortKey, CARD_SORT_DEFAULT_ASC, CARD_SORT_OPTIONS } from '@/lib/card-sort';
 import { speakEnglish, speakRussian, stopSpeech } from '@/lib/speech';
 
 type Phrase = { text: string; translation: string };
@@ -37,7 +39,8 @@ export default function ReadingScreen() {
   const router = useRouter();
   const theme = useTheme();
   const [deck, setDeck] = useState<Deck | null>(null);
-  const [queue, setQueue] = useState<DueCard[]>([]);
+  const [rawQueue, setRawQueue] = useState<DueCard[]>([]);
+  const [stats, setStats] = useState<Map<string, CardStats>>(new Map());
   const [loaded, setLoaded] = useState(false);
   const [index, setIndex] = useState(0);
   const [lang, setLang] = useState<'ru' | 'en' | 'both'>('ru');
@@ -50,6 +53,8 @@ export default function ReadingScreen() {
   const [aiPhrase, setAiPhrase] = useState<Phrase | null>(null);
   const [generating, setGenerating] = useState(false);
   const [knownLemmas, setKnownLemmas] = useState<string[]>([]);
+  const [sortKey, setSortKey] = useState<CardSortKey>('due');
+  const [sortAsc, setSortAsc] = useState(true);
   // False in Expo Go / off-iOS: Apple AI can never answer there, so the
   // button can only cycle saved phrases.
   const aiPossible = Platform.OS === 'ios' && Constants.appOwnership !== 'expo';
@@ -62,14 +67,16 @@ export default function ReadingScreen() {
     mountedRef.current = true;
     let cancelled = false;
     (async () => {
-      const [nextDeck, due, lemmas] = await Promise.all([
+      const [nextDeck, due, deckStats, lemmas] = await Promise.all([
         getDeck(id),
         listDueCards(id),
+        listCardStatsForDeck(id),
         listKnownLemmas(80),
       ]);
       if (cancelled) return;
       setDeck(nextDeck);
-      setQueue(due);
+      setStats(new Map(deckStats.map((s) => [s.card_id, s])));
+      setRawQueue(due);
       setKnownLemmas(lemmas);
       setLoaded(true);
       const session = await createAiSession(
@@ -95,7 +102,13 @@ export default function ReadingScreen() {
     };
   }, [id]);
 
-  const current = queue[index] ?? null;
+  // Re-order all due cards by the chosen key. Nothing is pulled in that
+  // isn't already due — the user's schedule is respected.
+  const sortedQueue = useMemo(() => {
+    return sortCards(rawQueue, stats, sortKey, sortAsc);
+  }, [rawQueue, stats, sortKey, sortAsc]);
+
+  const current = sortedQueue[index] ?? null;
   const currentId = current?.id;
   const currentEntryId = current?.entry_id;
 
@@ -123,7 +136,7 @@ export default function ReadingScreen() {
   }, [currentEntryId]);
 
   async function requestAiPhrase(): Promise<boolean> {
-    const card = queue[index] ?? null;
+    const card = sortedQueue[index] ?? null;
     if (!card || !mountedRef.current) return false;
     setGenerating(true);
     try {
@@ -222,21 +235,36 @@ export default function ReadingScreen() {
     if (
       !currentId ||
       !spoken ||
-      speechStart?.cardId !== currentId ||
       !/^\d+$/.test(autoAdvanceText) ||
       seconds < 1 ||
       seconds > 300
     ) {
       return;
     }
-    const remaining = seconds * 1000 - (Date.now() - speechStart.startedAt);
+    // Count from when speech started for this card. If speechStart was never
+    // recorded for the current card (e.g. TTS onStart didn't fire), fall back
+    // to now so auto-next still advances instead of stalling forever.
+    const startedAt =
+      speechStart?.cardId === currentId ? speechStart.startedAt : Date.now();
+    const remaining = seconds * 1000 - (Date.now() - startedAt);
     const timer = setTimeout(() => setIndex((i) => i + 1), Math.max(remaining, 0));
     return () => clearTimeout(timer);
   }, [autoAdvanceText, currentId, speechStart, spoken]);
 
   function onRetry() {
-    setQueue((prev) => shuffle(prev));
+    setRawQueue((prev) => shuffle(prev));
     setIndex(0);
+    setSortKey('due');
+    setSortAsc(true);
+  }
+
+  function onSortPress(key: CardSortKey) {
+    if (key === sortKey) {
+      setSortAsc((v) => !v);
+    } else {
+      setSortKey(key);
+      setSortAsc(CARD_SORT_DEFAULT_ASC[key]);
+    }
   }
 
   if (!loaded) {
@@ -247,7 +275,7 @@ export default function ReadingScreen() {
     );
   }
 
-  if (queue.length === 0) {
+  if (sortedQueue.length === 0) {
     return (
       <Screen>
         <ThemedText type="subtitle">Reading practice</ThemedText>
@@ -262,7 +290,7 @@ export default function ReadingScreen() {
       <Screen>
         <ThemedText type="subtitle">Reading complete</ThemedText>
         <CardBlock>
-          <ThemedText type="title">{queue.length}</ThemedText>
+          <ThemedText type="title">{sortedQueue.length}</ThemedText>
           <ThemedText themeColor="textSecondary">words read</ThemedText>
         </CardBlock>
         <UiButton label="Retry" onPress={onRetry} />
@@ -271,11 +299,43 @@ export default function ReadingScreen() {
     );
   }
 
+  // Pre-render sort chips outside JSX to keep the expression simple.
+  const sortChips = CARD_SORT_OPTIONS.map((o) => {
+    const active = o.key === sortKey;
+    return (
+      <Pressable
+        key={o.key}
+        onPress={() => onSortPress(o.key)}
+        style={[
+          styles.chip,
+          { backgroundColor: active ? theme.tint : theme.backgroundSelected },
+        ]}>
+        <ThemedText
+          type="smallBold"
+          style={{ color: active ? '#ffffff' : theme.text }}>
+          {o.label}
+          {active ? (sortAsc ? ' ▲' : ' ▼') : ''}
+        </ThemedText>
+      </Pressable>
+    );
+  });
+
   return (
     <Screen>
       <ThemedText type="small" themeColor="textSecondary" style={styles.counter}>
-        {deck?.name ?? 'Reading'} · {index + 1} of {queue.length}
+        {deck?.name ?? 'Reading'} · {index + 1} of {sortedQueue.length}
       </ThemedText>
+      {sortedQueue.length > 0 && (
+        <CardBlock>
+          <ThemedText type="smallBold">Order by</ThemedText>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.sortRow}>
+            {sortChips}
+          </ScrollView>
+        </CardBlock>
+      )}
       <ThemedText type="title" style={styles.wordText}>
         {current.front}
       </ThemedText>
@@ -398,5 +458,14 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.one,
     textAlign: 'center',
     fontSize: 16,
+  },
+  sortRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  chip: {
+    borderRadius: 16,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
   },
 });

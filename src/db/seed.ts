@@ -17,14 +17,16 @@ export async function seedIfNeeded(db: SQLiteDatabase): Promise<void> {
 
   await db.withTransactionAsync(async () => {
     await db.runAsync(
-      `INSERT INTO decks (id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO decks (id, name, description, pos_category, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
       deckId,
       'Russian starter',
       'A small seeded deck so reviews and morphology work immediately.',
+      null,
       createdAt,
       createdAt,
     );
 
+    let unlockOrder = 0;
     for (const lemma of RU_STARTER_DICTIONARY) {
       const entryId = createId();
       await db.runAsync(
@@ -64,15 +66,17 @@ export async function seedIfNeeded(db: SQLiteDatabase): Promise<void> {
         );
       }
 
+      unlockOrder += 1;
       await db.runAsync(
         `INSERT INTO cards (
           id, deck_id, entry_id, card_type, front, back,
           due, stability, difficulty, elapsed_days, scheduled_days, learning_steps,
-          reps, lapses, state, mastery_tier, quiz_due, last_review, review_face, review_history, created_at
-        ) VALUES (?, ?, ?, 'recognition', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, ?, ?, ?)`,
+          reps, lapses, state, mastery_tier, quiz_due, last_review, review_face, review_history, locked, unlock_order, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         createId(),
         deckId,
         entryId,
+        'recognition',
         lemma.lemma,
         lemma.gloss,
         fsrs.due.toISOString(),
@@ -84,9 +88,13 @@ export async function seedIfNeeded(db: SQLiteDatabase): Promise<void> {
         fsrs.reps,
         fsrs.lapses,
         fsrs.state,
+        0,
         fsrs.due.toISOString(),
+        null,
         1,
         '[]',
+        1,
+        unlockOrder,
         createdAt,
       );
     }
@@ -94,6 +102,39 @@ export async function seedIfNeeded(db: SQLiteDatabase): Promise<void> {
     await db.runAsync('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', 'seeded', '1');
     await db.runAsync('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)', 'schema_version', '1');
   });
+  }
+
+  const studyingLimit = await db.getFirstAsync<{ value: string }>(
+    "SELECT value FROM meta WHERE key = 'studying_limit'",
+  );
+  if (!studyingLimit) {
+    const firstDeck = await db.getFirstAsync<{ studying_limit: number }>(
+      'SELECT studying_limit FROM decks ORDER BY created_at ASC LIMIT 1',
+    );
+    const parsedLimit = Number(firstDeck?.studying_limit);
+    const initialLimit = Number.isFinite(parsedLimit)
+      ? Math.max(1, Math.min(1000, parsedLimit))
+      : 60;
+    await db.runAsync(
+      'INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)',
+      'studying_limit',
+      String(initialLimit),
+    );
+    await db.runAsync('UPDATE decks SET studying_limit = ?', initialLimit);
+  }
+
+  // Default settings for the book-tier system.
+  const settings = await db.getAllAsync<{ key: string; value: string }>(
+    'SELECT key, value FROM meta WHERE key = ?',
+    'book_min_translation_tier',
+  );
+  const settingKeys = new Set(settings.map((s) => s.key));
+  if (!settingKeys.has('book_min_translation_tier')) {
+    await db.runAsync(
+      'INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)',
+      'book_min_translation_tier',
+      String(4),
+    );
   }
 
   // Reader sample book (user-provided text). Seeded once: later launches

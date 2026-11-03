@@ -11,14 +11,18 @@ import { useTheme } from '@/hooks/use-theme';
 import {
   computeStreak,
   countDueCards,
+  countLearnedThisWeek,
+  countLearnedWords,
   getDailyGoal,
   getReviewActivity,
+  getTier4Retention,
   listDeckSummaries,
   listLeechCards,
   makeCardsDueNow,
   setDailyGoal,
   type DailyCount,
   type LeechCard,
+  type Tier4Retention,
 } from '@/db/queries';
 import type { DeckSummary } from '@/db/types';
 import { useDatabase } from '@/providers/database-provider';
@@ -44,6 +48,9 @@ export default function TodayScreen() {
   const [activity, setActivity] = useState<DailyCount[]>([]);
   const [goal, setGoal] = useState(20);
   const [leeches, setLeeches] = useState<LeechCard[]>([]);
+  const [learnedWords, setLearnedWords] = useState(0);
+  const [learnedThisWeek, setLearnedThisWeek] = useState(0);
+  const [tier4Retention, setTier4Retention] = useState<Tier4Retention | null>(null);
   const [drilling, setDrilling] = useState(false);
 
   useFocusEffect(
@@ -55,14 +62,22 @@ export default function TodayScreen() {
         getReviewActivity(14),
         getDailyGoal(),
         listLeechCards(undefined, 5),
-      ]).then(([due, deckRows, days, savedGoal, trouble]) => {
-        if (cancelled) return;
-        setDueCount(due);
-        setDecks(deckRows);
-        setActivity(days);
-        setGoal(savedGoal);
-        setLeeches(trouble);
-      });
+        countLearnedWords(),
+        countLearnedThisWeek(),
+        getTier4Retention(),
+      ]).then(
+        ([due, deckRows, days, savedGoal, trouble, learned, learnedWeek, retention]) => {
+          if (cancelled) return;
+          setDueCount(due);
+          setDecks(deckRows);
+          setActivity(days);
+          setGoal(savedGoal);
+          setLeeches(trouble);
+          setLearnedWords(learned);
+          setLearnedThisWeek(learnedWeek);
+          setTier4Retention(retention);
+        },
+      );
       return () => {
         cancelled = true;
       };
@@ -74,6 +89,22 @@ export default function TodayScreen() {
   const streak = computeStreak(activity, goal);
   const progress = goal > 0 ? Math.min(1, todayCount / goal) : 0;
   const maxBar = Math.max(goal, ...activity.map((d) => d.count), 1);
+
+  // Weekly progression from the 14-day activity: this week (last 7 days)
+  // vs the week before (days 8–14).
+  const thisWeek = activity.slice(-7).reduce((sum, d) => sum + d.count, 0);
+  const lastWeek = activity.slice(0, 7).reduce((sum, d) => sum + d.count, 0);
+  const weekChange =
+    lastWeek === 0
+      ? thisWeek > 0
+        ? 100
+        : 0
+      : Math.round(((thisWeek - lastWeek) / lastWeek) * 100);
+
+  const retentionPct =
+    tier4Retention && tier4Retention.totalReviews > 0
+      ? Math.round(tier4Retention.ratio * 100)
+      : null;
 
   async function changeGoal(delta: number) {
     const next = await setDailyGoal(goal + delta);
@@ -112,6 +143,21 @@ export default function TodayScreen() {
         disabled={!dueCount}
         onPress={() => router.push('/review')}
       />
+
+      {dueCount === 0 && cardTotal > 0 && (
+        <CardBlock>
+          <ThemedText type="smallBold">No cards are due right now</ThemedText>
+          <ThemedText type="small" themeColor="textSecondary">
+            To make more cards available for studying in each deck, adjust the studying card limit
+            in Settings.
+          </ThemedText>
+          <UiButton
+            label="Set studying card limit"
+            variant="secondary"
+            onPress={() => router.push('/settings')}
+          />
+        </CardBlock>
+      )}
 
       <CardBlock>
         <View style={styles.row}>
@@ -166,6 +212,40 @@ export default function TodayScreen() {
         </View>
         <ThemedText type="small" themeColor="textSecondary">
           Last 14 days · tinted bars met the goal.
+        </ThemedText>
+      </CardBlock>
+
+      <CardBlock>
+        <ThemedText type="smallBold">Progress</ThemedText>
+        <View style={styles.progressRow}>
+          <View style={[styles.stat, { backgroundColor: theme.backgroundElement }]}>
+            <ThemedText type="title">{learnedWords}</ThemedText>
+            <ThemedText type="small" themeColor="textSecondary">
+              words learned (tier 4+)
+            </ThemedText>
+          </View>
+          <View style={[styles.stat, { backgroundColor: theme.backgroundElement }]}>
+            <ThemedText type="title">{learnedThisWeek}</ThemedText>
+            <ThemedText type="small" themeColor="textSecondary">new this week</ThemedText>
+          </View>
+          <View style={[styles.stat, { backgroundColor: theme.backgroundElement }]}>
+            <ThemedText type="title">
+              {retentionPct === null ? '—' : retentionPct + '%'}
+            </ThemedText>
+            <ThemedText type="small" themeColor="textSecondary">
+              tier 4+ retention
+            </ThemedText>
+          </View>
+          <View style={[styles.stat, { backgroundColor: theme.backgroundElement }]}>
+            <ThemedText type="title">
+              {thisWeek}{weekChange >= 0 ? ' ▲' : ' ▼'}{Math.abs(weekChange)}%
+            </ThemedText>
+            <ThemedText type="small" themeColor="textSecondary">reviews this week</ThemedText>
+          </View>
+        </View>
+        <ThemedText type="small" themeColor="textSecondary">
+          Tier 4+ = graduated words. Retention = share of reviews on those words that were not
+          missed. Weekly change vs the week before.
         </ThemedText>
       </CardBlock>
 
@@ -250,5 +330,18 @@ const styles = StyleSheet.create({
   },
   leechRow: {
     paddingVertical: Spacing.one,
+  },
+  progressRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: Spacing.two,
+    marginTop: Spacing.two,
+  },
+  stat: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: Spacing.two,
+    paddingHorizontal: Spacing.two,
+    borderRadius: Spacing.two,
   },
 });

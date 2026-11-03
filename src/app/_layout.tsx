@@ -8,6 +8,7 @@ import { AnimatedSplashOverlay } from '@/components/animated-icon';
 import { DatabaseProvider, useDatabase } from '@/providers/database-provider';
 import { listUserDictionary } from '@/db/queries';
 import { setUserDictionary } from '@/lib/ru-en-dictionary';
+import { registerForPushNotificationsAsync, scheduleWeekdayRemindersAsync } from '@/lib/notifications';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -28,6 +29,19 @@ function UserDictionaryLoader() {
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      await registerForPushNotificationsAsync();
+      if (!cancelled) {
+        await scheduleWeekdayRemindersAsync();
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>

@@ -1,6 +1,12 @@
 export const MAX_MASTERY_TIER = 10;
 export const MASTERY_DEMOTION_TIERS = 2;
 export const MASTERY_FREE_REVIEW_TIER = 3;
+/**
+ * A card "graduates" out of the active studying stage when it reaches this
+ * tier. Graduated cards no longer count toward the user's studying WIP
+ * limit, freeing a slot to unlock the next locked card.
+ */
+export const MASTERY_GRADUATION_TIER = 4;
 export const MASTERY_INTERVAL_MS = [
   0,
   0,

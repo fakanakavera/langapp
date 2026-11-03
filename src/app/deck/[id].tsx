@@ -10,10 +10,17 @@ import { Slider } from '@/components/slider';
 import { ThemedText } from '@/components/themed-text';
 import { UiButton } from '@/components/ui-button';
 import { useTheme } from '@/hooks/use-theme';
-import { getDeck, listCardStatsForDeck, listCardsForDeck, pullDueForward, resetDeckStats } from '@/db/queries';
+import {
+  getDeck,
+  listCardStatsForDeck,
+  listCardsForDeck,
+  pullDueForward,
+  resetDeckStats,
+} from '@/db/queries';
 import type { CardStats } from '@/db/queries';
 import type { Deck, DueCard } from '@/db/types';
 import { formatDue } from '@/lib/dates';
+import { MASTERY_GRADUATION_TIER } from '@/lib/mastery';
 import { useDatabase } from '@/providers/database-provider';
 
 type SortKey = 'due' | 'accuracy' | 'streak' | 'fails' | 'reviews' | 'name';
@@ -85,6 +92,9 @@ export default function DeckScreen() {
   // user drags it. Target counts round up so the share is at least the
   // selected percentage.
   const total = cards.length;
+  const studyingCount = cards.filter(
+    (card) => card.locked === 0 && card.mastery_tier < MASTERY_GRADUATION_TIER,
+  ).length;
   const currentPct = total === 0 ? 0 : Math.round((dueCount / total) * 100);
   const selectedPct = targetPct ?? currentPct;
   const targetCount = Math.ceil((total * selectedPct) / 100);
@@ -190,6 +200,16 @@ export default function DeckScreen() {
       <ThemedText type="subtitle">{deck?.name ?? 'Deck'}</ThemedText>
       {deck?.description ? (
         <ThemedText themeColor="textSecondary">{deck.description}</ThemedText>
+      ) : null}
+
+      {deck ? (
+        <CardBlock>
+          <ThemedText type="smallBold">Studying card limit</ThemedText>
+          <ThemedText type="small" themeColor="textSecondary">
+            {studyingCount} of {deck.studying_limit} active cards. Settings applies the same
+            limit separately to every deck; other cards enter studying as cards graduate.
+          </ThemedText>
+        </CardBlock>
       ) : null}
 
       <UiButton
