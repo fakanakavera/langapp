@@ -352,6 +352,11 @@ export default function DeckScreen() {
             <ThemedText type="smallBold">
               {card.front} — {card.back}
             </ThemedText>
+            {card.cefr_level ? (
+              <ThemedText type="small" themeColor="textSecondary" style={styles.levelBadge}>
+                {card.cefr_level}
+              </ThemedText>
+            ) : null}
             <ThemedText type="small" themeColor="textSecondary">
               {formatDue(card.due)}
             </ThemedText>
@@ -396,5 +401,9 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     paddingVertical: 6,
     paddingHorizontal: 12,
+  },
+  levelBadge: {
+    marginTop: 2,
+    marginBottom: 4,
   },
 });

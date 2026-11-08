@@ -1,5 +1,6 @@
 export type TransactionType = 'income' | 'expense';
 export type RecurringFrequency = 'monthly_day' | 'every_days' | 'weekly';
+export type TransactionStatus = 'valid' | 'estimate';
 
 export type MoneyCategory = {
   id: string;
@@ -27,12 +28,15 @@ export type MoneyTransaction = {
   quantity: number;
   description: string;
   occurred_at: string;
+  status: TransactionStatus;
+  recurring_rule_id: string | null;
 };
 
 export type RecurringRule = {
   id: string;
   type: TransactionType;
   category_id: string | null;
+  subcategory_id: string | null;
   category_name: string | null;
   amount_minor: number;
   description: string;
@@ -55,6 +59,7 @@ export type MoneySubcategory = {
   category_id: string;
   name: string;
   amount_minor: number | null;
+  barcode: string | null;
 };
 
 export type MoneyPreferences = {
@@ -67,8 +72,10 @@ export type CalendarEntry = {
   type: TransactionType;
   amount_minor: number;
   description: string;
+  category_id: string | null;
   category_name: string | null;
   subcategory_name: string | null;
   occurred_at: string;
   scheduled: boolean;
+  status: TransactionStatus;
 };

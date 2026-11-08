@@ -227,6 +227,11 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
       ALTER TABLE cards ADD COLUMN unlock_order INTEGER NOT NULL DEFAULT 0;
     `);
   }
+  if (!cardColumnSet2.has('cefr_level')) {
+    await db.execAsync(`
+      ALTER TABLE cards ADD COLUMN cefr_level TEXT CHECK (cefr_level IN ('A1', 'A2', 'B1', 'B2', 'C1', 'C2'));
+    `);
+  }
 
   // Reader books + tapped unknown words (fresh installs get these from
   // SCHEMA_SQL; older installs pick them up here).
@@ -263,6 +268,7 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
         category_id TEXT NOT NULL,
         name TEXT NOT NULL,
         amount_minor INTEGER,
+        barcode TEXT,
         created_at TEXT NOT NULL,
         FOREIGN KEY (category_id) REFERENCES money_categories(id) ON DELETE CASCADE,
         UNIQUE (category_id, name)
@@ -270,6 +276,16 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_money_subcategories_category ON money_subcategories(category_id);
     `);
   }
+  const subcategoryColumns = await db.getAllAsync<{ name: string }>(
+    'PRAGMA table_info(money_subcategories)',
+  );
+  if (!subcategoryColumns.some((column) => column.name === 'barcode')) {
+    await db.execAsync('ALTER TABLE money_subcategories ADD COLUMN barcode TEXT;');
+  }
+  await db.execAsync(`
+    CREATE INDEX IF NOT EXISTS idx_money_subcategories_barcode
+      ON money_subcategories(barcode);
+  `);
 
   // Add subcategory_id to money_transactions for older installs.
   const txCols = await db.getAllAsync<{ name: string }>(
@@ -284,6 +300,51 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
   if (!txColumnSet.has('quantity')) {
     await db.execAsync(`
       ALTER TABLE money_transactions ADD COLUMN quantity INTEGER NOT NULL DEFAULT 1;
+    `);
+  }
+  if (!txColumnSet.has('status')) {
+    await db.execAsync(`
+      ALTER TABLE money_transactions ADD COLUMN status TEXT NOT NULL DEFAULT 'valid'
+        CHECK (status IN ('valid', 'estimate'));
+    `);
+  }
+  if (!txColumnSet.has('recurring_rule_id')) {
+    await db.execAsync(`
+      ALTER TABLE money_transactions ADD COLUMN recurring_rule_id TEXT;
+    `);
+  }
+  if (!txColumnSet.has('recurring_date')) {
+    await db.execAsync(`
+      ALTER TABLE money_transactions ADD COLUMN recurring_date TEXT;
+    `);
+  }
+  if (!txColumnSet.has('is_deleted')) {
+    await db.execAsync(`
+      ALTER TABLE money_transactions ADD COLUMN is_deleted INTEGER NOT NULL DEFAULT 0
+        CHECK (is_deleted IN (0, 1));
+    `);
+  }
+  await db.execAsync(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_money_transactions_recurring_date
+      ON money_transactions(recurring_rule_id, recurring_date)
+      WHERE recurring_rule_id IS NOT NULL;
+  `);
+
+  const recurringCols = await db.getAllAsync<{ name: string }>(
+    'PRAGMA table_info(money_recurring)',
+  );
+  if (!recurringCols.some((column) => column.name === 'subcategory_id')) {
+    await db.execAsync(`
+      ALTER TABLE money_recurring ADD COLUMN subcategory_id TEXT;
+      UPDATE money_recurring
+      SET subcategory_id = (
+        SELECT t.subcategory_id
+        FROM money_transactions t
+        WHERE t.recurring_rule_id = money_recurring.id
+          AND t.subcategory_id IS NOT NULL
+        LIMIT 1
+      )
+      WHERE subcategory_id IS NULL;
     `);
   }
 }

@@ -1,6 +1,6 @@
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { Alert, StyleSheet, TextInput, View } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { CardBlock } from '@/components/card-block';
 import { Screen } from '@/components/screen';
@@ -23,6 +23,7 @@ export default function AddScreen() {
   const [lemma, setLemma] = useState('');
   const [gloss, setGloss] = useState('');
   const [pos, setPos] = useState('');
+  const [cefrLevel, setCefrLevel] = useState<'A1' | 'A2' | 'B1' | 'B2' | 'C1' | 'C2' | null>(null);
   const [matches, setMatches] = useState<MorphologyMatch[]>([]);
 
   useFocusEffect(
@@ -65,6 +66,7 @@ export default function AddScreen() {
       gloss,
       pos,
       surfaceForm: surface,
+      cefr_level: cefrLevel,
     });
     refresh();
     setSurface('');
@@ -116,6 +118,36 @@ export default function AddScreen() {
         style={inputStyle}
       />
 
+      <ThemedText type="smallBold">CEFR level (optional)</ThemedText>
+      <ThemedText themeColor="textSecondary">
+        Controls unlock order within this deck: A1 first, then A2, B1, B2…
+      </ThemedText>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.levelRow}>
+        {(['A1', 'A2', 'B1', 'B2', 'C1', 'C2'] as const).map((level) => (
+          <Pressable
+            key={level}
+            onPress={() => setCefrLevel(level)}
+            style={[
+              styles.levelChip,
+              cefrLevel === level ? { backgroundColor: theme.tint } : { backgroundColor: theme.backgroundSelected },
+            ]}>
+            <ThemedText type="smallBold" style={{ color: cefrLevel === level ? '#ffffff' : theme.text }}>
+              {level}
+            </ThemedText>
+          </Pressable>
+        ))}
+        <Pressable
+          onPress={() => setCefrLevel(null)}
+          style={[
+            styles.levelChip,
+            cefrLevel === null ? { backgroundColor: theme.tint } : { backgroundColor: theme.backgroundSelected },
+          ]}>
+          <ThemedText type="smallBold" style={{ color: cefrLevel === null ? '#ffffff' : theme.text }}>
+            None
+          </ThemedText>
+        </Pressable>
+      </ScrollView>
+
       <ThemedText type="smallBold">Deck</ThemedText>
       <View style={styles.deckRow}>
         {decks.map((deck) => (
@@ -153,5 +185,14 @@ const styles = StyleSheet.create({
   },
   deckRow: {
     gap: Spacing.two,
+  },
+  levelRow: {
+    gap: Spacing.two,
+    paddingBottom: Spacing.one,
+  },
+  levelChip: {
+    borderRadius: 16,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
   },
 });

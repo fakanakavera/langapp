@@ -344,6 +344,7 @@ export async function addVocabulary(input: {
   pos?: string;
   notes?: string;
   surfaceForm?: string;
+  cefr_level?: string | null;
 }): Promise<{ entry: Entry; card: CardRow }> {
   const db = getDb();
   const createdAt = nowIso();
@@ -391,6 +392,7 @@ export async function addVocabulary(input: {
     review_history: [],
     locked: 1,
     unlock_order: unlockOrder,
+    cefr_level: input.cefr_level ?? null,
     created_at: createdAt,
   };
 
@@ -424,8 +426,8 @@ export async function addVocabulary(input: {
       `INSERT INTO cards (
         id, deck_id, entry_id, card_type, front, back,
         due, stability, difficulty, elapsed_days, scheduled_days, learning_steps,
-        reps, lapses, state, mastery_tier, quiz_due, last_review, review_face, review_history, locked, unlock_order, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        reps, lapses, state, mastery_tier, quiz_due, last_review, review_face, review_history, locked, unlock_order, cefr_level, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       card.id,
       card.deck_id,
       card.entry_id,
@@ -448,6 +450,7 @@ export async function addVocabulary(input: {
       JSON.stringify(card.review_history),
       card.locked,
       card.unlock_order,
+      card.cefr_level,
       card.created_at,
     );
 
@@ -1361,12 +1364,13 @@ export async function importDeckPayload(
       const newCardId = createId();
       cardIds.set(card.id, newCardId);
       const importUnlockOrder = (card as any).unlock_order ?? cardIds.size;
+      const importCefrLevel = (card as any).cefr_level ?? null;
       await db.runAsync(
         `INSERT INTO cards (
           id, deck_id, entry_id, card_type, front, back,
           due, stability, difficulty, elapsed_days, scheduled_days, learning_steps,
-          reps, lapses, state, mastery_tier, quiz_due, last_review, review_face, review_history, locked, unlock_order, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          reps, lapses, state, mastery_tier, quiz_due, last_review, review_face, review_history, locked, unlock_order, cefr_level, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         newCardId,
         deck.id,
         entryId,
@@ -1389,6 +1393,7 @@ export async function importDeckPayload(
         '[]',
         1,
         importUnlockOrder,
+        importCefrLevel,
         card.created_at ?? now,
       );
     }
@@ -1549,8 +1554,8 @@ export async function importDeckIntoDeck(
         `INSERT INTO cards (
           id, deck_id, entry_id, card_type, front, back,
           due, stability, difficulty, elapsed_days, scheduled_days, learning_steps,
-          reps, lapses, state, mastery_tier, quiz_due, last_review, review_face, review_history, locked, unlock_order, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          reps, lapses, state, mastery_tier, quiz_due, last_review, review_face, review_history, locked, unlock_order, cefr_level, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         newCardId,
         targetDeckId,
         entryId,
@@ -1573,6 +1578,7 @@ export async function importDeckIntoDeck(
         '[]',
         1,
         unlockOrder,
+        (card as any).cefr_level ?? null,
         card.created_at ?? now,
       );
 
@@ -1774,8 +1780,8 @@ export async function restoreBackup(payload: BackupPayload): Promise<void> {
         `INSERT INTO cards (
           id, deck_id, entry_id, card_type, front, back,
           due, stability, difficulty, elapsed_days, scheduled_days, learning_steps,
-          reps, lapses, state, mastery_tier, quiz_due, last_review, review_face, review_history, locked, unlock_order, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          reps, lapses, state, mastery_tier, quiz_due, last_review, review_face, review_history, locked, unlock_order, cefr_level, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         card.id,
         card.deck_id,
         card.entry_id,
@@ -1798,6 +1804,7 @@ export async function restoreBackup(payload: BackupPayload): Promise<void> {
         JSON.stringify(reviewHistory),
         (card as any).locked ?? 1,
         (card as any).unlock_order ?? 0,
+        (card as any).cefr_level ?? null,
         card.created_at,
       );
     }
@@ -2161,7 +2168,17 @@ export async function unlockNextCards(preferDeckId?: string): Promise<number> {
     const rows = await db.getAllAsync<{ id: string }>(
       `SELECT id FROM cards
        WHERE deck_id = ? AND locked = 1
-       ORDER BY unlock_order ASC
+       ORDER BY
+         CASE cefr_level
+           WHEN 'A1' THEN 1
+           WHEN 'A2' THEN 2
+           WHEN 'B1' THEN 3
+           WHEN 'B2' THEN 4
+           WHEN 'C1' THEN 5
+           WHEN 'C2' THEN 6
+           ELSE 99
+         END ASC,
+         unlock_order ASC
        LIMIT ?`,
       deckId,
       slots,

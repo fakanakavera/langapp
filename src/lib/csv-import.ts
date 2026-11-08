@@ -300,6 +300,7 @@ export function csvToBackupPayload(
         review_history: [],
         locked: 1,
         unlock_order: counter + 1,
+        cefr_level: null,
         created_at: nowIso,
       });
     }

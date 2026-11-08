@@ -67,6 +67,7 @@ export type CardRow = {
   review_history: FaceResponse[];
   locked: number;
   unlock_order: number;
+  cefr_level: string | null;
   created_at: string;
 };
 

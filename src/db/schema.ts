@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS cards (
   review_history TEXT NOT NULL DEFAULT '[]',
   locked INTEGER NOT NULL DEFAULT 1,
   unlock_order INTEGER NOT NULL DEFAULT 0,
+  cefr_level TEXT CHECK (cefr_level IN ('A1', 'A2', 'B1', 'B2', 'C1', 'C2')),
   created_at TEXT NOT NULL,
   FOREIGN KEY (deck_id) REFERENCES decks(id) ON DELETE CASCADE,
   FOREIGN KEY (entry_id) REFERENCES entries(id) ON DELETE CASCADE
@@ -140,6 +141,7 @@ CREATE TABLE IF NOT EXISTS money_subcategories (
   category_id TEXT NOT NULL,
   name TEXT NOT NULL,
   amount_minor INTEGER,
+  barcode TEXT,
   created_at TEXT NOT NULL,
   FOREIGN KEY (category_id) REFERENCES money_categories(id) ON DELETE CASCADE,
   UNIQUE (category_id, name)
@@ -153,9 +155,13 @@ CREATE TABLE IF NOT EXISTS money_transactions (
   category_id TEXT,
   subcategory_id TEXT,
   amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
-  quantity INTEGER NOT NULL DEFAULT 1,
+  quantity REAL NOT NULL DEFAULT 1 CHECK (quantity > 0),
   description TEXT NOT NULL DEFAULT '',
   occurred_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'valid' CHECK (status IN ('valid', 'estimate')),
+  recurring_rule_id TEXT,
+  recurring_date TEXT,
+  is_deleted INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
   created_at TEXT NOT NULL,
   FOREIGN KEY (category_id) REFERENCES money_categories(id) ON DELETE SET NULL,
   FOREIGN KEY (subcategory_id) REFERENCES money_subcategories(id) ON DELETE SET NULL
@@ -170,6 +176,7 @@ CREATE TABLE IF NOT EXISTS money_recurring (
   id TEXT PRIMARY KEY NOT NULL,
   type TEXT NOT NULL CHECK (type IN ('income', 'expense')),
   category_id TEXT,
+  subcategory_id TEXT,
   amount_minor INTEGER NOT NULL CHECK (amount_minor > 0),
   description TEXT NOT NULL DEFAULT '',
   frequency TEXT NOT NULL CHECK (frequency IN ('monthly_day', 'every_days', 'weekly')),
@@ -178,7 +185,8 @@ CREATE TABLE IF NOT EXISTS money_recurring (
   weekday INTEGER,
   start_date TEXT NOT NULL,
   end_date TEXT,
-  FOREIGN KEY (category_id) REFERENCES money_categories(id) ON DELETE SET NULL
+  FOREIGN KEY (category_id) REFERENCES money_categories(id) ON DELETE SET NULL,
+  FOREIGN KEY (subcategory_id) REFERENCES money_subcategories(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS money_budgets (
