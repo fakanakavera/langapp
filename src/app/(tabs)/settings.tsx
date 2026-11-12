@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react';
-import { Alert, StyleSheet, TextInput } from 'react-native';
+import { Alert, Pressable, ScrollView, StyleSheet, TextInput } from 'react-native';
+import * as Sharing from 'expo-sharing';
+import { File, Paths } from 'expo-file-system';
 
 import { getAiStatus } from '@/ai/engine';
 import { exportBackup, importDeckFile } from '@/backup/backup';
+import * as DocumentPicker from 'expo-document-picker';
 import { CardBlock } from '@/components/card-block';
 import { Screen } from '@/components/screen';
 import { ThemedText } from '@/components/themed-text';
@@ -14,13 +17,19 @@ import {
   getBookMinTranslationTier,
   getStudyingLimit,
   listDeckSummaries,
+  listWordsWithoutPhrasesForDecks,
+  importPhrasesForDecks,
   setBookMinTranslationTier,
   setStudyingLimit,
   unlockNextCards,
 } from '@/db/queries';
 import type { DeckSummary } from '@/db/types';
+import type { WordWithoutPhrase } from '@/db/queries';
+import { parsePhraseText } from '@/lib/phrase-import';
 import { useTheme } from '@/hooks/use-theme';
 import { useDatabase } from '@/providers/database-provider';
+
+type PickedFile = { name: string; uri: string };
 
 type NameStatus = 'idle' | 'checking' | 'taken' | 'ok';
 
@@ -38,6 +47,137 @@ export default function SettingsScreen() {
   const [tierDraft, setTierDraft] = useState('');
   const [savingTier, setSavingTier] = useState(false);
   const ai = getAiStatus();
+
+  // Export words without phrases
+  const [selectedDeckIds, setSelectedDeckIds] = useState<string[]>([]);
+  const [onlyAvailable, setOnlyAvailable] = useState(false);
+  const [exportWords, setExportWords] = useState<WordWithoutPhrase[]>([]);
+  const [exportText, setExportText] = useState('');
+  const [exportBusy, setExportBusy] = useState(false);
+
+  // Import phrases from file into selected decks
+  const [phraseFiles, setPhraseFiles] = useState<PickedFile[]>([]);
+  const [phraseRows, setPhraseRows] = useState<{ lemma: string; text: string; translation: string }[]>([]);
+  const [phraseSkipped, setPhraseSkipped] = useState(0);
+  const [phraseBusy, setPhraseBusy] = useState(false);
+
+  function toggleDeck(deckId: string) {
+    setSelectedDeckIds((prev) =>
+      prev.includes(deckId) ? prev.filter((id) => id !== deckId) : [...prev, deckId],
+    );
+  }
+
+  async function onGenerateWordList() {
+    if (selectedDeckIds.length === 0) {
+      Alert.alert('Select decks', 'Pick at least one deck first.');
+      return;
+    }
+    setExportBusy(true);
+    try {
+      const words = await listWordsWithoutPhrasesForDecks({
+        deckIds: selectedDeckIds,
+        onlyAvailable,
+      });
+      setExportWords(words);
+      setExportText(
+        words.map((w) => w.lemma).join('\n') || '(no words found)',
+      );
+    } catch (error) {
+      Alert.alert('Could not generate list', error instanceof Error ? error.message : String(error));
+    } finally {
+      setExportBusy(false);
+    }
+  }
+
+  async function onShareWordList() {
+    if (!exportText) return;
+    const filename = `langapp-words-without-phrases-${new Date().toISOString().slice(0, 10)}.txt`;
+    const file = new File(Paths.cache, filename);
+    if (file.exists) {
+      file.delete();
+    }
+    file.create();
+    file.write(exportText);
+    try {
+      await Sharing.shareAsync(file.uri, {
+        mimeType: 'text/plain',
+        UTI: 'public.plain-text',
+        dialogTitle: 'Words without phrases',
+      });
+    } catch (error) {
+      Alert.alert('Could not share list', error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  async function onPhrasePickFiles() {
+    setPhraseBusy(true);
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: ['text/csv', 'text/plain', '.csv', '.txt'],
+        copyToCacheDirectory: true,
+        multiple: true,
+      });
+      if (result.canceled || result.assets.length === 0) return;
+
+      const files: PickedFile[] = result.assets.map((asset: { name?: string | null; uri: string }) => ({
+        name: asset.name ?? 'Phrases',
+        uri: asset.uri,
+      }));
+
+      const byKey = new Map<string, { lemma: string; text: string; translation: string }>();
+      let totalSkipped = 0;
+      for (const file of files) {
+        const text = await new File(file.uri).text();
+        const parsed = parsePhraseText(text);
+        totalSkipped += parsed.skipped;
+        for (const row of parsed.rows) {
+          const key = `${row.lemma.toLocaleLowerCase('ru-RU')}||${row.text.toLocaleLowerCase('ru-RU')}`;
+          if (!byKey.has(key)) byKey.set(key, row);
+        }
+      }
+
+      setPhraseFiles(files);
+      setPhraseRows([...byKey.values()]);
+      setPhraseSkipped(totalSkipped);
+    } catch (error) {
+      Alert.alert('Could not read file', error instanceof Error ? error.message : String(error));
+    } finally {
+      setPhraseBusy(false);
+    }
+  }
+
+  async function onPhraseImport() {
+    if (phraseRows.length === 0) return;
+    setPhraseBusy(true);
+    try {
+      const result = await importPhrasesForDecks({
+        phrases: phraseRows,
+      });
+
+      const lines: string[] = [];
+      lines.push(
+        `Added ${result.added} phrase${result.added === 1 ? '' : 's'} to ${result.matched} word${result.matched === 1 ? '' : 's'}.`,
+      );
+      if (result.unmatched.length) {
+        lines.push(
+          `${result.unmatched.length} word${result.unmatched.length === 1 ? '' : 's'} not found in the selected decks and were skipped:`,
+        );
+        lines.push(result.unmatched.join(', '));
+      }
+      if (phraseSkipped) {
+        lines.push(`${phraseSkipped} line${phraseSkipped === 1 ? '' : 's'} in the file couldn't be parsed and were skipped.`);
+      }
+
+      Alert.alert('Phrases imported', lines.join('\n\n'));
+      setPhraseFiles([]);
+      setPhraseRows([]);
+      setPhraseSkipped(0);
+    } catch (error) {
+      Alert.alert('Import failed', error instanceof Error ? error.message : String(error));
+    } finally {
+      setPhraseBusy(false);
+    }
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -289,6 +429,167 @@ export default function SettingsScreen() {
       />
 
       <CardBlock>
+        <ThemedText type="smallBold">Export words without phrases</ThemedText>
+        <ThemedText type="small" themeColor="textSecondary">
+          Pick decks and output every word that still has no example phrase.
+          Give the list to an LLM to generate a phrase CSV, then import it
+          below for all selected decks at once.
+        </ThemedText>
+
+        <ThemedText type="smallBold">Select decks</ThemedText>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.deckChipRow}>
+          {decks.map((deck) => {
+            const active = selectedDeckIds.includes(deck.id);
+            return (
+              <Pressable
+                key={deck.id}
+                onPress={() => toggleDeck(deck.id)}
+                style={[
+                  styles.deckChip,
+                  active
+                    ? { backgroundColor: theme.tint }
+                    : { backgroundColor: theme.backgroundSelected },
+                ]}>
+                <ThemedText
+                  type="smallBold"
+                  style={{ color: active ? '#ffffff' : theme.text }}>
+                  {deck.name}
+                  {active ? ' ✓' : ''}
+                </ThemedText>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+        {decks.length === 0 ? (
+          <ThemedText type="small" themeColor="textSecondary">
+            No decks yet.
+          </ThemedText>
+        ) : null}
+
+        <ThemedText type="smallBold">Scope</ThemedText>
+        <Pressable
+          style={styles.scopeRow}
+          onPress={() => setOnlyAvailable((v) => !v)}>
+          <ThemedText type="small" themeColor="textSecondary">
+            {onlyAvailable ? '■' : '□'}
+            {' '}
+            Only currently available (unlocked & due) words
+          </ThemedText>
+        </Pressable>
+
+        <UiButton
+          label={exportBusy ? 'Generating…' : 'Generate word list'}
+          disabled={exportBusy || selectedDeckIds.length === 0}
+          onPress={onGenerateWordList}
+          variant="secondary"
+        />
+
+        {exportWords.length > 0 ? (
+          <>
+            <ThemedText type="smallBold">
+              Words without phrases ({exportWords.length})
+            </ThemedText>
+            <ScrollView
+              contentContainerStyle={styles.wordList}
+              showsVerticalScrollIndicator={false}>
+              {exportText.split('\n').map((word, i) => (
+                <ThemedText key={i} type="small" themeColor="textSecondary">
+                  {word}
+                </ThemedText>
+              ))}
+            </ScrollView>
+            <TextInput
+              value={exportText}
+              editable={false}
+              multiline
+              numberOfLines={6}
+              style={[
+                styles.exportText,
+                { color: theme.text, backgroundColor: theme.backgroundElement },
+              ]}
+              placeholder="No words selected"
+            />
+            <UiButton
+              label="Share list"
+              variant="secondary"
+              onPress={onShareWordList}
+            />
+          </>
+        ) : null}
+      </CardBlock>
+
+      <CardBlock>
+        <ThemedText type="smallBold">Import phrases from file</ThemedText>
+        <ThemedText type="small" themeColor="textSecondary">
+          Upload a .csv or .txt file with phrase rows. Each row:
+          word, Russian sentence, English translation. Phrases are matched
+          to your words across every deck — no deck selection needed.
+        </ThemedText>
+
+        <UiButton
+          label="Pick phrase file(s)"
+          onPress={onPhrasePickFiles}
+          disabled={phraseBusy}
+        />
+
+        {phraseFiles.length > 0 ? (
+          <>
+            <ThemedText type="smallBold">Files</ThemedText>
+            {phraseFiles.map((file) => (
+              <CardBlock key={file.uri}>
+                <ThemedText type="small">{file.name}</ThemedText>
+              </CardBlock>
+            ))}
+            <UiButton
+              label="Clear"
+              variant="secondary"
+              onPress={() => {
+                setPhraseFiles([]);
+                setPhraseRows([]);
+                setPhraseSkipped(0);
+              }}
+              disabled={phraseBusy}
+            />
+          </>
+        ) : null}
+
+        {phraseRows.length > 0 ? (
+          <>
+            <ThemedText type="smallBold">
+              Phrases to import ({phraseRows.length})
+            </ThemedText>
+            {phraseRows.slice(0, 30).map((row, i) => (
+              <CardBlock key={i}>
+                <ThemedText type="smallBold">{row.lemma}</ThemedText>
+                <ThemedText type="small" themeColor="textSecondary">
+                  {row.text}
+                  {row.translation ? ` — ${row.translation}` : ''}
+                </ThemedText>
+              </CardBlock>
+            ))}
+            {phraseRows.length > 30 ? (
+              <ThemedText type="small" themeColor="textSecondary">
+                …and {phraseRows.length - 30} more
+              </ThemedText>
+            ) : null}
+            <UiButton
+              label={`Import ${phraseRows.length} phrase${phraseRows.length === 1 ? '' : 's'}`}
+              disabled={phraseBusy || phraseRows.length === 0}
+              onPress={onPhraseImport}
+            />
+          </>
+        ) : null}
+
+        <ThemedText type="small" themeColor="textSecondary">
+          Words not found in any of your decks are reported after import —
+          check the spelling / lemma matches your cards.
+        </ThemedText>
+      </CardBlock>
+
+      <CardBlock>
         <ThemedText type="smallBold">On-device AI</ThemedText>
         <ThemedText type="small" themeColor="textSecondary">
           Backend: {ai.backend}
@@ -315,5 +616,31 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.three,
     paddingVertical: Spacing.two + 2,
     fontSize: 16,
+  },
+  deckChipRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  deckChip: {
+    borderRadius: 20,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+  },
+  scopeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  wordList: {
+    paddingHorizontal: 16,
+    gap: 4,
+  },
+  exportText: {
+    borderRadius: Spacing.three,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two + 2,
+    fontSize: 14,
+    textAlignVertical: 'top',
+    marginTop: 8,
   },
 });

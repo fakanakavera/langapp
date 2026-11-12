@@ -144,6 +144,20 @@ export default function TodayScreen() {
         onPress={() => router.push('/review')}
       />
 
+      <CardBlock>
+        <ThemedText type="smallBold">Global multiple choice quiz</ThemedText>
+        <ThemedText type="small" themeColor="textSecondary">
+          Quiz the quiz-due words of every deck at once — distractors come from all
+          your decks, so you can roll through everything you know and clear it out
+          faster, leaving only what you still need to study.
+        </ThemedText>
+        <UiButton
+          label="Start global quiz"
+          variant="secondary"
+          onPress={() => router.push('/quiz/all')}
+        />
+      </CardBlock>
+
       {dueCount === 0 && cardTotal > 0 && (
         <CardBlock>
           <ThemedText type="smallBold">No cards are due right now</ThemedText>

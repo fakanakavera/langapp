@@ -284,6 +284,11 @@ export default function DeckScreen() {
         disabled={importing}
       />
       <UiButton
+        label="Add phrases to all words"
+        variant="secondary"
+        onPress={() => router.push(`/deck/${id}/add-phrases` as never)}
+      />
+      <UiButton
         label={resetting ? 'Resetting…' : 'Reset all stats'}
         variant="secondary"
         onPress={onResetStats}

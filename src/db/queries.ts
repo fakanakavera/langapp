@@ -240,6 +240,20 @@ export async function listEntriesForDeck(deckId: string): Promise<DeckEntry[]> {
   );
 }
 
+/**
+ * Every vocabulary entry that has at least one card in any deck, for the
+ * global multiple-choice quiz's distractor pool.
+ */
+export async function listAllEntries(): Promise<DeckEntry[]> {
+  return getDb().getAllAsync<DeckEntry>(
+    `SELECT e.id AS entry_id, e.lemma AS lemma, e.gloss AS gloss, e.pos AS pos
+     FROM entries e
+     JOIN cards c ON c.entry_id = e.id
+     GROUP BY e.id
+     ORDER BY e.lemma COLLATE NOCASE`,
+  );
+}
+
 export async function listCardsForDeck(deckId: string): Promise<DueCard[]> {
   const rows = await getDb().getAllAsync<any>(
     `SELECT c.*, e.lemma, e.gloss, d.name AS deck_name
@@ -268,17 +282,7 @@ export type CardStats = {
  * Per-card right/wrong + streak for a deck in a single query (deck
  * screen stats bars). Small decks: a few hundred review rows at most.
  */
-export async function listCardStatsForDeck(deckId: string): Promise<CardStats[]> {
-  const rows = await getDb()
-    .getAllAsync<{ card_id: string; rating: number }>(
-      `SELECT r.card_id, r.rating
-        FROM reviews r
-        JOIN cards c ON c.id = r.card_id
-        WHERE c.deck_id = ?
-        ORDER BY r.reviewed_at DESC`,
-      deckId,
-    )
-    .catch(() => [] as { card_id: string; rating: number }[]);
+function aggregateCardStats(rows: { card_id: string; rating: number }[]): CardStats[] {
   const byCard = new Map<
     string,
     { count: number; fail: number; streak: number; streakOpen: boolean }
@@ -307,6 +311,48 @@ export async function listCardStatsForDeck(deckId: string): Promise<CardStats[]>
   }));
 }
 
+export async function listCardStatsForDeck(deckId: string): Promise<CardStats[]> {
+  const rows = await getDb()
+    .getAllAsync<{ card_id: string; rating: number }>(
+      `SELECT r.card_id, r.rating
+        FROM reviews r
+        JOIN cards c ON c.id = r.card_id
+        WHERE c.deck_id = ?
+        ORDER BY r.reviewed_at DESC`,
+      deckId,
+    )
+    .catch(() => [] as { card_id: string; rating: number }[]);
+  return aggregateCardStats(rows);
+}
+
+/**
+ * Per-card right/wrong + streak across every deck (for the global quiz).
+ * Same aggregation as listCardStatsForDeck, but without a deck filter.
+ */
+export async function listAllCardStats(): Promise<CardStats[]> {
+  const rows = await getDb()
+    .getAllAsync<{ card_id: string; rating: number }>(
+      `SELECT r.card_id, r.rating
+        FROM reviews r
+        JOIN cards c ON c.id = r.card_id
+        ORDER BY r.reviewed_at DESC`,
+    )
+    .catch(() => [] as { card_id: string; rating: number }[]);
+  return aggregateCardStats(rows);
+}
+
+/**
+ * Find any deck that holds a card for this entry. Used by the global quiz
+ * so a wrong distractor can still lapse the confused word in one of its decks.
+ */
+export async function getCardForEntryAnyDeck(entryId: string): Promise<string | null> {
+  const row = await getDb().getFirstAsync<{ deck_id: string }>(
+    'SELECT deck_id FROM cards WHERE entry_id = ? LIMIT 1',
+    entryId,
+  );
+  return row?.deck_id ?? null;
+}
+
 export async function getEntry(id: string): Promise<Entry | null> {
   return getDb().getFirstAsync<Entry>('SELECT * FROM entries WHERE id = ?', id);
 }
@@ -322,6 +368,28 @@ export async function listExamples(entryId: string): Promise<Example[]> {
   return getDb().getAllAsync<Example>(
     'SELECT * FROM examples WHERE entry_id = ? ORDER BY created_at DESC',
     entryId,
+  );
+}
+
+export type EntryWithoutExamples = {
+  entry_id: string;
+  lemma: string;
+  gloss: string;
+};
+
+/** Entries in a deck that still have zero example phrases. Examples live on
+ * the entry (word), not the deck, so a word is listed only when it has no
+ * examples at all — whichever deck you open it from. */
+export async function listEntriesWithoutExamples(deckId: string): Promise<EntryWithoutExamples[]> {
+  return getDb().getAllAsync<EntryWithoutExamples>(
+    `SELECT e.id AS entry_id, e.lemma AS lemma, e.gloss AS gloss
+     FROM entries e
+     JOIN cards c ON c.entry_id = e.id
+     WHERE c.deck_id = ?
+       AND NOT EXISTS (SELECT 1 FROM examples x WHERE x.entry_id = e.id)
+     GROUP BY e.id
+     ORDER BY e.lemma COLLATE NOCASE`,
+    deckId,
   );
 }
 
@@ -905,6 +973,160 @@ export async function addExample(input: {
     example.created_at,
   );
   return example;
+}
+
+/** Bulk-insert example phrases for many entries in a single transaction.
+ * Returns how many phrases were actually inserted (blank texts are skipped). */
+export async function addExamplesBulk(input: {
+  entries: {
+    entryId: string;
+    examples: { text: string; translation: string }[];
+  }[];
+}): Promise<number> {
+  const db = getDb();
+  let total = 0;
+  await db.withTransactionAsync(async () => {
+    const now = nowIso();
+    for (const item of input.entries) {
+      for (const ex of item.examples) {
+        const text = ex.text.trim();
+        if (!text) continue;
+        await db.runAsync(
+          `INSERT INTO examples (id, entry_id, text, translation, hint, source, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          createId(),
+          item.entryId,
+          text,
+          ex.translation.trim(),
+          '',
+          'user',
+          now,
+        );
+        total += 1;
+      }
+    }
+  });
+  return total;
+}
+
+export type ImportedPhrase = {
+  entry_id: string;
+  lemma: string;
+  text: string;
+  translation: string;
+};
+
+export type PhraseImportResult = {
+  added: number;
+  matched: number;
+  unmatched: string[];
+};
+
+/**
+ * Bulk-add example phrases to words already in any deck. Each phrase is
+ * matched to a deck entry by normalized lemma across every deck; phrases
+ * whose word isn't in any deck are reported as unmatched. Exact duplicates
+ * (same entry + same text) are skipped so re-importing is safe. All inserts
+ * run in one transaction.
+ */
+export async function importPhrasesForDecks(input: {
+  phrases: { lemma: string; text: string; translation: string }[];
+}): Promise<PhraseImportResult> {
+  const db = getDb();
+  const now = nowIso();
+
+  // Every entry that has a card in any deck, keyed by normalized lemma.
+  const rows = await db.getAllAsync<{ id: string; lemma: string }>(
+    `SELECT e.id, e.lemma
+     FROM entries e
+     JOIN cards c ON c.entry_id = e.id
+     GROUP BY e.id`,
+  );
+  const byLemma = new Map<string, string>(); // normalized lemma -> entry_id
+  for (const row of rows) {
+    const key = normalizeRussian(stripAccents(row.lemma)).toLocaleLowerCase('ru-RU');
+    if (key && !byLemma.has(key)) byLemma.set(key, row.id);
+  }
+
+  let added = 0;
+  let matched = 0;
+  const unmatched: string[] = [];
+
+  await db.withTransactionAsync(async () => {
+    for (const phrase of input.phrases) {
+      const text = phrase.text.trim();
+      if (!text) continue;
+
+      const key = normalizeRussian(stripAccents(phrase.lemma)).toLocaleLowerCase('ru-RU');
+      const entryId = byLemma.get(key);
+      if (!entryId) {
+        unmatched.push(phrase.lemma);
+        continue;
+      }
+
+      // Skip exact duplicates so re-importing the same file is safe.
+      const exists = await db.getFirstAsync<{ id: string }>(
+        'SELECT id FROM examples WHERE entry_id = ? AND text = ? LIMIT 1',
+        entryId,
+        text,
+      );
+      if (exists) continue;
+
+      await db.runAsync(
+        `INSERT INTO examples (id, entry_id, text, translation, hint, source, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        createId(),
+        entryId,
+        text,
+        phrase.translation.trim(),
+        '',
+        'user',
+        now,
+      );
+      added += 1;
+      matched += 1;
+    }
+  });
+
+  return { added, matched, unmatched };
+}
+
+export type WordWithoutPhrase = {
+  entry_id: string;
+  lemma: string;
+  gloss: string;
+  deck_names: string;
+};
+
+/** Words (entries) in the given decks that have no example phrases.
+ * When `onlyAvailable` is true, restrict to cards that are unlocked
+ * and due now (currently available for study). Results are grouped by
+ * entry so a word shared across several decks lists all its decks. */
+export async function listWordsWithoutPhrasesForDecks(input: {
+  deckIds: string[];
+  onlyAvailable: boolean;
+}): Promise<WordWithoutPhrase[]> {
+  const db = getDb();
+  const placeholders = input.deckIds.map(() => '?').join(',');
+  const now = nowIso();
+  const availableFilter = input.onlyAvailable
+    ? 'AND c.locked = 0 AND c.due <= ?'
+    : '';
+  const params = input.onlyAvailable ? [...input.deckIds, now] : input.deckIds;
+
+  return db.getAllAsync<WordWithoutPhrase>(
+    `SELECT e.id AS entry_id, e.lemma AS lemma, e.gloss AS gloss,
+            GROUP_CONCAT(d.name) AS deck_names
+     FROM entries e
+     JOIN cards c ON c.entry_id = e.id
+     JOIN decks d ON d.id = c.deck_id
+     WHERE d.id IN (${placeholders})
+       AND NOT EXISTS (SELECT 1 FROM examples x WHERE x.entry_id = e.id)
+       ${availableFilter}
+     GROUP BY e.id
+     ORDER BY e.lemma COLLATE NOCASE`,
+    ...params,
+  );
 }
 
 export async function listKnownWords(): Promise<{ entry_id: string; lemma: string; gloss: string }[]> {

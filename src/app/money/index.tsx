@@ -181,6 +181,12 @@ export default function MoneyHomeScreen() {
   const [scanCandidates, setScanCandidates] = useState<MoneySubcategory[]>([]);
   const [scannedBarcode, setScannedBarcode] = useState('');
   const [scanRequiresBarcodeMapping, setScanRequiresBarcodeMapping] = useState(false);
+  const [batchMode, setBatchMode] = useState(false);
+  const [batchDate, setBatchDate] = useState(localDateString(new Date()));
+  const [batchCategoryId, setBatchCategoryId] = useState<string | null>(null);
+  const [batchPendingSubcategory, setBatchPendingSubcategory] = useState<MoneySubcategory | null>(null);
+  const [batchQuantity, setBatchQuantity] = useState('1');
+  const [batchEditingQuantity, setBatchEditingQuantity] = useState(false);
   const [budgetCategoryId, setBudgetCategoryId] = useState('all');
   const [budgetAmount, setBudgetAmount] = useState('');
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
@@ -826,6 +832,12 @@ export default function MoneyHomeScreen() {
     setScannerVisible(false);
   };
 
+  const closeBatchScanner = () => {
+    scannerLocked.current = false;
+    setCameraReady(false);
+    setScannerVisible(false);
+  };
+
   const handleCameraMountError = (message: string) => {
     closeBarcodeScanner();
     Alert.alert('Could not start camera', message);
@@ -838,6 +850,14 @@ export default function MoneyHomeScreen() {
     const category = data?.categories.find((item) => item.id === subcategory.category_id);
     if (!category) {
       Alert.alert('Item unavailable', 'This subcategory no longer has a category.');
+      return;
+    }
+    if (batchMode) {
+      setBatchPendingSubcategory(subcategory);
+      setBatchQuantity('1');
+      setBatchEditingQuantity(false);
+      setScanChoiceVisible(false);
+      setScanRequiresBarcodeMapping(false);
       return;
     }
     if (saveBarcodeMapping) {
@@ -870,6 +890,37 @@ export default function MoneyHomeScreen() {
   const handleBarcodeScanned = (result: BarcodeScanningResult) => {
     if (scannerLocked.current) return;
     scannerLocked.current = true;
+    if (batchMode) {
+      setScannerVisible(false);
+      if (!data) return;
+      const barcode = result.data.trim();
+      if (!barcode) {
+        Alert.alert('Barcode not recognized', 'Try scanning the barcode again.');
+        setScannerVisible(true);
+        scannerLocked.current = false;
+        return;
+      }
+      const matches = data.subcategories.filter((subcategory) => subcategory.barcode === barcode);
+      if (matches.length === 1) {
+        setBatchPendingSubcategory(matches[0]);
+        setBatchQuantity('1');
+        setBatchEditingQuantity(false);
+        return;
+      }
+      if (matches.length > 1) {
+        setScanCandidates(matches);
+        setScanRequiresBarcodeMapping(false);
+        setScanChoiceVisible(true);
+        return;
+      }
+      Alert.alert(
+        'No matching item',
+        'No saved item matches this barcode. Add it in the categories screen first.',
+      );
+      setScannerVisible(true);
+      scannerLocked.current = false;
+      return;
+    }
     setScannerVisible(false);
     if (!data) return;
     const barcode = result.data.trim();
@@ -900,6 +951,104 @@ export default function MoneyHomeScreen() {
     setScanCandidates(data.subcategories.filter((subcategory) => !subcategory.barcode));
     setScanRequiresBarcodeMapping(true);
     setScanChoiceVisible(true);
+  };
+
+  const openBatchSetup = () => {
+    setBatchDate(localDateString(new Date()));
+    setBatchCategoryId(null);
+    setBatchPendingSubcategory(null);
+    setBatchQuantity('1');
+    setBatchEditingQuantity(false);
+    setBatchMode(true);
+  };
+
+  const closeBatchMode = () => {
+    setBatchMode(false);
+    setScannerVisible(false);
+    setBatchPendingSubcategory(null);
+    setBatchQuantity('1');
+    setBatchEditingQuantity(false);
+  };
+
+  const handleBatchCategorySelect = (categoryId: string | null) => {
+    setBatchCategoryId(categoryId);
+  };
+
+  const startBatchScanning = async () => {
+    if (!data || !batchCategoryId) return;
+    if (!isValidLocalDate(batchDate)) {
+      Alert.alert('Check the date', 'Enter a valid date in YYYY-MM-DD format.');
+      return;
+    }
+    const category = data.categories.find((c) => c.id === batchCategoryId);
+    if (!category) return;
+    scannerLocked.current = false;
+    setCameraReady(false);
+    setScannerVisible(true);
+  };
+
+  const toggleBatchQuantityEditing = () => {
+    setBatchEditingQuantity(true);
+  };
+
+  const finishBatchQuantityEditing = (value: string) => {
+    const parsed = parseQuantity(value);
+    if (parsed === null || parsed <= 0) {
+      setBatchQuantity('1');
+    } else {
+      setBatchQuantity(String(parsed));
+    }
+    setBatchEditingQuantity(false);
+  };
+
+  const confirmBatchItem = async () => {
+    if (!data || !batchPendingSubcategory || !batchCategoryId) return;
+    const parsed = parseQuantity(batchQuantity);
+    if (parsed === null) {
+      Alert.alert(
+        'Check the quantity',
+        'Enter a quantity greater than zero with up to 2 decimal places.',
+      );
+      return;
+    }
+    const category = data.categories.find((c) => c.id === batchCategoryId);
+    const subcategory = batchPendingSubcategory;
+    if (!category) return;
+    let amountMinor = 0;
+    if (subcategory.amount_minor != null) {
+      amountMinor = Math.round(subcategory.amount_minor * parsed);
+      if (!Number.isSafeInteger(amountMinor)) {
+        Alert.alert('Check the total', 'The total amount is too large.');
+        return;
+      }
+    }
+    try {
+      await saveTransaction({
+        type: category.type,
+        categoryId: batchCategoryId,
+        subcategoryId: subcategory.id,
+        amountMinor,
+        quantity: parsed,
+        description: subcategory.name,
+        occurredAt: batchDate,
+      });
+      refresh();
+    } catch (caught) {
+      Alert.alert('Could not add item', caught instanceof Error ? caught.message : String(caught));
+      return;
+    }
+    setBatchPendingSubcategory(null);
+    setBatchQuantity('1');
+    setBatchEditingQuantity(false);
+    scannerLocked.current = false;
+    setScannerVisible(true);
+  };
+
+  const cancelBatchItem = () => {
+    setBatchPendingSubcategory(null);
+    setBatchQuantity('1');
+    setBatchEditingQuantity(false);
+    closeBatchMode();
   };
 
   const selectedDayEntries = [
@@ -1117,6 +1266,12 @@ export default function MoneyHomeScreen() {
               </Pressable>
             ))}
           </View>
+          <UiButton
+            label="Add multiple items"
+            variant="secondary"
+            style={styles.batchRow}
+            onPress={openBatchSetup}
+          />
           <CardBlock>
             <UiButton
               label="Scan item barcode"
@@ -2296,9 +2451,25 @@ export default function MoneyHomeScreen() {
             <ThemedText type="subtitle" style={{ color: '#fff' }}>
               Scan item barcode
             </ThemedText>
-            <Pressable accessibilityRole="button" onPress={closeBarcodeScanner}>
-              <ThemedText style={{ color: '#fff' }}>Close</ThemedText>
-            </Pressable>
+            {batchMode ? (
+              <>
+                {batchCategoryId && data ? (
+                  <View style={styles.batchScannerInfo}>
+                    <ThemedText style={{ color: '#fff', fontSize: 13, opacity: 0.9 }}>
+                      {batchDate} ·{' '}
+                      {data.categories.find((category) => category.id === batchCategoryId)?.name}
+                    </ThemedText>
+                  </View>
+                ) : null}
+                <Pressable accessibilityRole="button" onPress={closeBatchScanner}>
+                  <ThemedText style={{ color: '#fff' }}>Back</ThemedText>
+                </Pressable>
+              </>
+            ) : (
+              <Pressable accessibilityRole="button" onPress={closeBarcodeScanner}>
+                <ThemedText style={{ color: '#fff' }}>Close</ThemedText>
+              </Pressable>
+            )}
           </View>
           <View style={styles.cameraHint}>
             <ThemedText style={{ color: '#fff', textAlign: 'center' }}>
@@ -2385,6 +2556,209 @@ export default function MoneyHomeScreen() {
           </ScrollView>
         </View>
       </Modal>
+
+      {batchMode && !scannerVisible && !batchPendingSubcategory && (
+        <Modal
+          visible={true}
+          animationType="slide"
+          presentationStyle="pageSheet"
+          onRequestClose={closeBatchMode}>
+          <View style={[styles.modal, { backgroundColor: theme.background }]}>
+            <View style={styles.modalHeader}>
+              <ThemedText type="subtitle" style={styles.modalTitle}>
+                Add multiple items
+              </ThemedText>
+              <Pressable onPress={closeBatchMode}>
+                <ThemedText style={{ color: theme.tint }}>Cancel</ThemedText>
+              </Pressable>
+            </View>
+            <ScrollView
+              contentContainerStyle={styles.modalContent}
+              keyboardShouldPersistTaps="handled">
+              <CardBlock
+                style={[styles.modalCard, { backgroundColor: theme.backgroundElement }]}>
+                <ThemedText type="smallBold">Date</ThemedText>
+                <TextInput
+                  value={batchDate}
+                  onChangeText={setBatchDate}
+                  placeholder={localDateString(new Date())}
+                  placeholderTextColor={theme.textSecondary}
+                  style={[styles.input, { color: theme.text, borderColor: theme.backgroundSelected }]}
+                />
+                <ThemedText type="small" themeColor="textSecondary">
+                  All scanned items will be saved with this date.
+                </ThemedText>
+                <ThemedText type="smallBold">Category</ThemedText>
+                {categoriesForType.map((category) => (
+                  <Pressable
+                    key={category.id}
+                    accessibilityRole="button"
+                    onPress={() => handleBatchCategorySelect(category.id)}
+                    style={[
+                      styles.batchCategoryRow,
+                      batchCategoryId === category.id
+                        ? { backgroundColor: theme.tint, borderColor: theme.tint }
+                        : {
+                            backgroundColor: theme.backgroundElement,
+                            borderColor: theme.backgroundSelected,
+                          },
+                    ]}>
+                    <ThemedText
+                      type="smallBold"
+                      style={{ color: batchCategoryId === category.id ? '#fff' : theme.text }}>
+                      {category.name}
+                    </ThemedText>
+                    {batchCategoryId === category.id && (
+                      <ThemedText style={{ color: 'rgba(255, 255, 255, 0.9)', fontSize: 14 }}>
+                        ✓
+                      </ThemedText>
+                    )}
+                  </Pressable>
+                ))}
+                {categoriesForType.length === 0 && (
+                  <ThemedText themeColor="textSecondary">
+                    No categories for this type yet. Add some first.
+                  </ThemedText>
+                )}
+                <ThemedText type="small" themeColor="textSecondary">
+                  All scanned items will be saved with this category.
+                </ThemedText>
+              </CardBlock>
+              <View style={styles.batchActions}>
+                <UiButton
+                  label="Cancel"
+                  variant="secondary"
+                  onPress={closeBatchMode}
+                  style={styles.batchActionButton}
+                />
+                <UiButton
+                  label="Start scanning"
+                  disabled={!batchCategoryId}
+                  onPress={startBatchScanning}
+                  style={styles.batchActionButton}
+                />
+              </View>
+            </ScrollView>
+          </View>
+        </Modal>
+      )}
+
+      {!!batchPendingSubcategory && !scannerVisible && (
+        <Modal
+          visible={true}
+          animationType="slide"
+          presentationStyle="pageSheet"
+          onRequestClose={cancelBatchItem}>
+          <View style={[styles.modal, { backgroundColor: theme.background }]}>
+            <View style={styles.modalHeader}>
+              <ThemedText type="subtitle" style={styles.modalTitle}>
+                {batchPendingSubcategory.name}
+              </ThemedText>
+              <Pressable onPress={cancelBatchItem}>
+                <ThemedText style={{ color: theme.tint }}>Cancel</ThemedText>
+              </Pressable>
+            </View>
+            <ScrollView contentContainerStyle={styles.modalContent} keyboardShouldPersistTaps="handled">
+              <CardBlock
+                style={[styles.modalCard, { backgroundColor: theme.backgroundElement }]}>
+                {batchPendingSubcategory.amount_minor != null && (
+                  <>
+                    <ThemedText type="smallBold">Unit price</ThemedText>
+                    <ThemedText type="small" themeColor="textSecondary">
+                      {formatMoney(
+                        batchPendingSubcategory.amount_minor,
+                        preferences.currency,
+                      )}
+                    </ThemedText>
+                  </>
+                )}
+                <ThemedText type="smallBold">Quantity</ThemedText>
+                <View style={styles.batchQuantityRow}>
+                  <Pressable
+                    accessibilityLabel="Decrease quantity"
+                    onPress={() => {
+                      const parsed = parseQuantity(batchQuantity);
+                      if (parsed != null && parsed > 1) {
+                        setBatchQuantity(String(Math.max(1, parsed - 1)));
+                      } else {
+                        setBatchQuantity('1');
+                      }
+                    }}
+                    style={[
+                      styles.batchQuantityButton,
+                      { backgroundColor: theme.backgroundElement },
+                    ]}>
+                    <ThemedText style={{ color: theme.tint, fontWeight: '700', fontSize: 20 }}>
+                      −
+                    </ThemedText>
+                  </Pressable>
+                  <Pressable
+                    accessibilityLabel="Quantity"
+                    onPress={toggleBatchQuantityEditing}
+                    style={[
+                      styles.batchQuantityDisplay,
+                      { backgroundColor: theme.backgroundElement },
+                    ]}>
+                    {batchEditingQuantity ? (
+                      <TextInput
+                        value={batchQuantity}
+                        onChangeText={setBatchQuantity}
+                        keyboardType="numeric"
+                        onSubmitEditing={(event) =>
+                          finishBatchQuantityEditing(event.nativeEvent.text)
+                        }
+                        onBlur={() => finishBatchQuantityEditing(batchQuantity)}
+                        style={{
+                          flex: 1,
+                          color: theme.text,
+                          fontSize: 22,
+                          fontWeight: '700',
+                          textAlign: 'center',
+                        }}
+                      />
+                    ) : (
+                      <ThemedText style={{ color: theme.text, fontSize: 24, fontWeight: '700' }}>
+                        {batchQuantity}
+                      </ThemedText>
+                    )}
+                  </Pressable>
+                  <Pressable
+                    accessibilityLabel="Increase quantity"
+                    onPress={() => {
+                      const parsed = parseQuantity(batchQuantity);
+                      setBatchQuantity(parsed != null ? String(parsed + 1) : '1');
+                    }}
+                    style={[
+                      styles.batchQuantityButton,
+                      { backgroundColor: theme.backgroundElement },
+                    ]}>
+                    <ThemedText style={{ color: theme.tint, fontWeight: '700', fontSize: 20 }}>
+                      +
+                    </ThemedText>
+                  </Pressable>
+                </View>
+                <ThemedText type="small" themeColor="textSecondary">
+                  Tap the number to type a quantity directly.
+                </ThemedText>
+              </CardBlock>
+              <View style={styles.batchActions}>
+                <UiButton
+                  label="Cancel"
+                  variant="secondary"
+                  onPress={cancelBatchItem}
+                  style={styles.batchActionButton}
+                />
+                <UiButton
+                  label="Confirm"
+                  onPress={confirmBatchItem}
+                  style={styles.batchActionButton}
+                />
+              </View>
+            </ScrollView>
+          </View>
+        </Modal>
+      )}
+
     </Screen>
   );
 }
@@ -3568,5 +3942,59 @@ const styles = StyleSheet.create({
   },
   amountRow: {
     gap: Spacing.one,
+  },
+  batchRow: {
+    width: '100%',
+    alignSelf: 'stretch',
+    marginTop: Spacing.one,
+  },
+  batchCategoryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+    borderWidth: 1,
+    borderRadius: 12,
+    marginBottom: Spacing.one,
+  },
+  batchScannerInfo: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.half,
+  },
+  batchActions: {
+    flexDirection: 'row',
+    gap: Spacing.two,
+    marginTop: Spacing.two,
+  },
+  batchActionButton: {
+    flex: 1,
+  },
+  batchQuantityRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: Spacing.two,
+    marginTop: Spacing.one,
+  },
+  batchQuantityButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: Spacing.two,
+    paddingHorizontal: Spacing.two,
+    minWidth: 44,
+  },
+  batchQuantityDisplay: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderRadius: 12,
+    paddingVertical: Spacing.two,
+    minHeight: 48,
   },
 });
