@@ -892,12 +892,17 @@ export default function MoneyHomeScreen() {
     scannerLocked.current = true;
     if (batchMode) {
       setScannerVisible(false);
-      if (!data) return;
+      if (!data) {
+        scannerLocked.current = false;
+        return;
+      }
       const barcode = result.data.trim();
       if (!barcode) {
-        Alert.alert('Barcode not recognized', 'Try scanning the barcode again.');
-        setScannerVisible(true);
-        scannerLocked.current = false;
+        Alert.alert(
+          'Barcode not recognized',
+          'Try scanning the barcode again.',
+          [{ text: 'OK', onPress: () => { setScannerVisible(true); scannerLocked.current = false; } }],
+        );
         return;
       }
       const matches = data.subcategories.filter((subcategory) => subcategory.barcode === barcode);
@@ -905,52 +910,65 @@ export default function MoneyHomeScreen() {
         setBatchPendingSubcategory(matches[0]);
         setBatchQuantity('1');
         setBatchEditingQuantity(false);
+        scannerLocked.current = false;
         return;
       }
       if (matches.length > 1) {
         setScanCandidates(matches);
         setScanRequiresBarcodeMapping(false);
         setScanChoiceVisible(true);
+        scannerLocked.current = false;
         return;
       }
       Alert.alert(
         'No matching item',
         'No saved item matches this barcode. Add it in the categories screen first.',
+        [{ text: 'OK', onPress: () => { scannerLocked.current = false; } }],
       );
-      setScannerVisible(true);
-      scannerLocked.current = false;
       return;
     }
     setScannerVisible(false);
-    if (!data) return;
+    if (!data) {
+      scannerLocked.current = false;
+      return;
+    }
     const barcode = result.data.trim();
     if (!barcode) {
-      Alert.alert('Barcode not recognized', 'Try scanning the barcode again.');
+      Alert.alert(
+        'Barcode not recognized',
+        'Try scanning the barcode again.',
+        [{ text: 'OK', onPress: () => { scannerLocked.current = false; } }],
+      );
       return;
     }
     if (scannerPurpose === 'subcategory') {
       setSubcategoryBarcode(barcode);
+      scannerLocked.current = false;
       return;
     }
     if (scannerPurpose === 'new-subcategory') {
       setNewSubcategoryBarcode(barcode);
+      scannerLocked.current = false;
       return;
     }
     setScannedBarcode(barcode);
     const matches = data.subcategories.filter((subcategory) => subcategory.barcode === barcode);
     if (matches.length === 1) {
       void selectScannedSubcategory(matches[0], false);
+      scannerLocked.current = false;
       return;
     }
     if (matches.length > 1) {
       setScanCandidates(matches);
       setScanRequiresBarcodeMapping(false);
       setScanChoiceVisible(true);
+      scannerLocked.current = false;
       return;
     }
     setScanCandidates(data.subcategories.filter((subcategory) => !subcategory.barcode));
     setScanRequiresBarcodeMapping(true);
     setScanChoiceVisible(true);
+    scannerLocked.current = false;
   };
 
   const openBatchSetup = () => {
@@ -2147,7 +2165,11 @@ export default function MoneyHomeScreen() {
               <ThemedText style={{ color: theme.tint }}>Done</ThemedText>
             </Pressable>
           </View>
-          <ScrollView contentContainerStyle={styles.modalContent} keyboardShouldPersistTaps="handled">
+          <ScrollView
+            style={{ flex: 1 }}
+            contentContainerStyle={styles.modalContent}
+            keyboardShouldPersistTaps="handled"
+          >
             {/* --- Add new category / subcategory --- */}
             {!subcategoryEditorVisible && (
               <CardBlock
@@ -2187,7 +2209,13 @@ export default function MoneyHomeScreen() {
                   </ThemedText>
                 </Pressable>
                 {dropdownOpen && (
-                  <View style={[styles.dropdownList, { borderColor: theme.backgroundSelected }]}>
+                  <ScrollView
+                    style={[
+                      styles.dropdownList,
+                      { borderColor: theme.backgroundSelected },
+                    ]}
+                    showsVerticalScrollIndicator={false}
+                  >
                     <Pressable
                       accessibilityRole="button"
                       onPress={() => {
@@ -2195,7 +2223,9 @@ export default function MoneyHomeScreen() {
                         setDropdownOpen(false);
                       }}
                       style={styles.dropdownItem}>
-                      <ThemedText style={{ color: theme.text }}>New category</ThemedText>
+                      <ThemedText style={{ color: theme.text }}>
+                        New category
+                      </ThemedText>
                     </Pressable>
                     {categoriesForType.map((category) => (
                       <Pressable
@@ -2206,10 +2236,12 @@ export default function MoneyHomeScreen() {
                           setDropdownOpen(false);
                         }}
                         style={styles.dropdownItem}>
-                        <ThemedText style={{ color: theme.text }}>{category.name}</ThemedText>
+                        <ThemedText style={{ color: theme.text }}>
+                          {category.name}
+                        </ThemedText>
                       </Pressable>
                     ))}
-                  </View>
+                  </ScrollView>
                 )}
                 {selectedParentCategoryId !== null && (
                   <View style={styles.amountRow}>
