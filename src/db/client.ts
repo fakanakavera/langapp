@@ -347,6 +347,26 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
       WHERE subcategory_id IS NULL;
     `);
   }
+
+  // Calendar tables: add reminder_offset for older installs.
+  const eventCols = await db.getAllAsync<{ name: string }>(
+    "PRAGMA table_info(calendar_events)"
+  );
+  const eventColumnSet = new Set(eventCols.map((c) => c.name));
+  if (!eventColumnSet.has('reminder_offset')) {
+    await db.execAsync(`
+      ALTER TABLE calendar_events ADD COLUMN reminder_offset INTEGER NOT NULL DEFAULT 0;
+    `);
+  }
+  const todoCols = await db.getAllAsync<{ name: string }>(
+    "PRAGMA table_info(calendar_todos)"
+  );
+  const todoColumnSet = new Set(todoCols.map((c) => c.name));
+  if (!todoColumnSet.has('reminder_offset')) {
+    await db.execAsync(`
+      ALTER TABLE calendar_todos ADD COLUMN reminder_offset INTEGER NOT NULL DEFAULT 0;
+    `);
+  }
 }
 
 export async function initDatabase(): Promise<SQLite.SQLiteDatabase> {

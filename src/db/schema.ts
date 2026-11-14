@@ -200,4 +200,37 @@ CREATE TABLE IF NOT EXISTS money_settings (
   key TEXT PRIMARY KEY NOT NULL,
   value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS calendar_events (
+  id TEXT PRIMARY KEY NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  start_date TEXT NOT NULL,
+  end_date TEXT NOT NULL,
+  is_all_day INTEGER NOT NULL DEFAULT 0 CHECK (is_all_day IN (0, 1)),
+  reminder_offset INTEGER NOT NULL DEFAULT 0,
+  recurrence_type TEXT NOT NULL DEFAULT 'none' CHECK (recurrence_type IN ('none', 'daily', 'weekly', 'monthly', 'yearly')),
+  recurrence_end_date TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_calendar_events_start_date ON calendar_events(start_date);
+
+CREATE TABLE IF NOT EXISTS calendar_todos (
+  id TEXT PRIMARY KEY NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  due_date TEXT NOT NULL,
+  due_time TEXT,
+  is_completed INTEGER NOT NULL DEFAULT 0 CHECK (is_completed IN (0, 1)),
+  reminder_offset INTEGER NOT NULL DEFAULT 0,
+  recurrence_type TEXT NOT NULL DEFAULT 'none' CHECK (recurrence_type IN ('none', 'daily', 'weekly', 'monthly', 'yearly')),
+  recurrence_end_date TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_calendar_todos_due_date ON calendar_todos(due_date);
+CREATE INDEX IF NOT EXISTS idx_calendar_todos_completed ON calendar_todos(is_completed);
 `;

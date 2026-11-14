@@ -51,6 +51,23 @@ export default function HubScreen() {
           onPress={() => router.push('/money')}
         />
       </CardBlock>
+
+      <CardBlock style={[styles.appCard, { borderColor: theme.backgroundElement }]}>
+        <ThemedText type="title" style={styles.icon}>
+          📅
+        </ThemedText>
+        <ThemedText type="smallBold">CALENDAR</ThemedText>
+        <ThemedText type="subtitle">Events & ToDos</ThemedText>
+        <ThemedText themeColor="textSecondary">
+          Schedule events and to-dos with reminders that work even when your
+          phone is locked.
+        </ThemedText>
+        <UiButton
+          label="Open Calendar"
+          variant="secondary"
+          onPress={() => router.push('/calendar')}
+        />
+      </CardBlock>
     </Screen>
   );
 }

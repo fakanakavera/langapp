@@ -2492,3 +2492,206 @@ export async function listInflectionsForDeck(deckId: string): Promise<CaseInflec
     deckId,
   );
 }
+
+// ---------------------------------------------------------------------------
+// Calendar events + todos.
+// ---------------------------------------------------------------------------
+
+export type CalendarEvent = {
+  id: string;
+  title: string;
+  description: string;
+  start_date: string; // ISO datetime
+  end_date: string; // ISO datetime
+  is_all_day: number;
+  reminder_offset: number; // minutes before start to notify
+  recurrence_type: 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly';
+  recurrence_end_date: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CalendarTodo = {
+  id: string;
+  title: string;
+  description: string;
+  due_date: string; // ISO date (YYYY-MM-DD)
+  due_time: string | null; // HH:mm or null
+  is_completed: number;
+  reminder_offset: number; // minutes before due to notify
+  recurrence_type: 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly';
+  recurrence_end_date: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type CalendarEventInput = {
+  id?: string;
+  title: string;
+  description?: string;
+  start_date: string;
+  end_date: string;
+  is_all_day?: number;
+  reminder_offset?: number;
+  recurrence_type?: CalendarEvent['recurrence_type'];
+  recurrence_end_date?: string | null;
+};
+
+type CalendarTodoInput = {
+  id?: string;
+  title: string;
+  description?: string;
+  due_date: string;
+  due_time?: string | null;
+  reminder_offset?: number;
+  recurrence_type?: CalendarTodo['recurrence_type'];
+  recurrence_end_date?: string | null;
+};
+
+export async function saveCalendarEvent(input: CalendarEventInput): Promise<CalendarEvent> {
+  const db = getDb();
+  const now = nowIso();
+  const id = input.id ?? createId();
+  await db.runAsync(
+    `INSERT INTO calendar_events (
+      id, title, description, start_date, end_date, is_all_day,
+      reminder_offset, recurrence_type, recurrence_end_date, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+      title = excluded.title,
+      description = excluded.description,
+      start_date = excluded.start_date,
+      end_date = excluded.end_date,
+      is_all_day = excluded.is_all_day,
+      reminder_offset = excluded.reminder_offset,
+      recurrence_type = excluded.recurrence_type,
+      recurrence_end_date = excluded.recurrence_end_date,
+      updated_at = excluded.updated_at`,
+    id,
+    input.title.trim(),
+    input.description?.trim() ?? '',
+    input.start_date,
+    input.end_date,
+    input.is_all_day ?? 0,
+    input.reminder_offset ?? 0,
+    input.recurrence_type ?? 'none',
+    input.recurrence_end_date ?? null,
+    now,
+    now,
+  );
+  // Return the saved event directly — no extra SELECT needed.
+  return {
+    id,
+    title: input.title.trim(),
+    description: input.description?.trim() ?? '',
+    start_date: input.start_date,
+    end_date: input.end_date,
+    is_all_day: input.is_all_day ?? 0,
+    reminder_offset: input.reminder_offset ?? 0,
+    recurrence_type: input.recurrence_type ?? 'none',
+    recurrence_end_date: input.recurrence_end_date ?? null,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
+export async function getCalendarEvent(id: string): Promise<CalendarEvent> {
+  const row = await getDb().getFirstAsync<CalendarEvent>(
+    'SELECT * FROM calendar_events WHERE id = ?',
+    id,
+  );
+  if (!row) throw new Error('Calendar event not found.');
+  return row;
+}
+
+export async function listCalendarEvents(): Promise<CalendarEvent[]> {
+  return getDb().getAllAsync<CalendarEvent>(
+    'SELECT * FROM calendar_events ORDER BY start_date ASC',
+  );
+}
+
+export async function deleteCalendarEvent(id: string): Promise<void> {
+  await getDb().runAsync('DELETE FROM calendar_events WHERE id = ?', id);
+}
+
+export async function saveCalendarTodo(input: CalendarTodoInput): Promise<CalendarTodo> {
+  const db = getDb();
+  const now = nowIso();
+  const id = input.id ?? createId();
+  await db.runAsync(
+    `INSERT INTO calendar_todos (
+      id, title, description, due_date, due_time, is_completed,
+      reminder_offset, recurrence_type, recurrence_end_date, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+      title = excluded.title,
+      description = excluded.description,
+      due_date = excluded.due_date,
+      due_time = excluded.due_time,
+      is_completed = excluded.is_completed,
+      reminder_offset = excluded.reminder_offset,
+      recurrence_type = excluded.recurrence_type,
+      recurrence_end_date = excluded.recurrence_end_date,
+      updated_at = excluded.updated_at`,
+    id,
+    input.title.trim(),
+    input.description?.trim() ?? '',
+    input.due_date,
+    input.due_time ?? null,
+    0,
+    input.reminder_offset ?? 0,
+    input.recurrence_type ?? 'none',
+    input.recurrence_end_date ?? null,
+    now,
+    now,
+  );
+  return {
+    id,
+    title: input.title.trim(),
+    description: input.description?.trim() ?? '',
+    due_date: input.due_date,
+    due_time: input.due_time ?? null,
+    is_completed: 0,
+    reminder_offset: input.reminder_offset ?? 0,
+    recurrence_type: input.recurrence_type ?? 'none',
+    recurrence_end_date: input.recurrence_end_date ?? null,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
+export async function getCalendarTodo(id: string): Promise<CalendarTodo> {
+  const row = await getDb().getFirstAsync<CalendarTodo>(
+    'SELECT * FROM calendar_todos WHERE id = ?',
+    id,
+  );
+  if (!row) throw new Error('Calendar todo not found.');
+  return row;
+}
+
+export async function listCalendarTodos(): Promise<CalendarTodo[]> {
+  return getDb().getAllAsync<CalendarTodo>(
+    'SELECT * FROM calendar_todos ORDER BY due_date ASC, due_time ASC',
+  );
+}
+
+export async function deleteCalendarTodo(id: string): Promise<void> {
+  await getDb().runAsync('DELETE FROM calendar_todos WHERE id = ?', id);
+}
+
+export async function toggleCalendarTodo(id: string): Promise<CalendarTodo> {
+  const db = getDb();
+  const row = await getDb().getFirstAsync<{ is_completed: number }>(
+    'SELECT is_completed FROM calendar_todos WHERE id = ?',
+    id,
+  );
+  if (!row) throw new Error('Calendar todo not found.');
+  const next = row.is_completed === 0 ? 1 : 0;
+  await db.runAsync(
+    'UPDATE calendar_todos SET is_completed = ?, updated_at = ? WHERE id = ?',
+    next,
+    nowIso(),
+    id,
+  );
+  return getCalendarTodo(id);
+}

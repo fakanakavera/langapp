@@ -138,3 +138,99 @@ export async function cancelWeekdayRemindersAsync(): Promise<void> {
       notification.content.title === 'LangApp reminder',
   );
 }
+
+// ---------------------------------------------------------------------------
+// Calendar event & todo notifications.
+// These fire even when the phone is locked (system-delivered).
+// ---------------------------------------------------------------------------
+
+export async function scheduleCalendarEventNotification(event: {
+  id: string;
+  title: string;
+  start_date: string;
+  reminder_offset: number;
+}): Promise<void> {
+  if (Platform.OS === 'web') return;
+  const { status } = await Notifications.getPermissionsAsync();
+  if (status !== 'granted') return;
+
+  await cancelNotifications(
+    (n) => n.content.data?.kind === 'calendar-event' && n.content.data?.eventId === event.id,
+  );
+
+  const start = new Date(event.start_date);
+  start.setMinutes(start.getMinutes() - event.reminder_offset);
+  if (start <= new Date()) return;
+
+  await Notifications.scheduleNotificationAsync({
+    content: {
+      title: `Calendar: ${event.title}`,
+      body: `Starting in ${event.reminder_offset} minute${event.reminder_offset !== 1 ? 's' : ''}.`,
+      sound: true,
+      data: { kind: 'calendar-event', eventId: event.id },
+    },
+    trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: start },
+    identifier: `calendar-event-${event.id}`,
+  });
+}
+
+export async function cancelCalendarEventNotification(eventId: string): Promise<void> {
+  if (Platform.OS === 'web') return;
+  await cancelNotifications(
+    (n) => n.content.data?.kind === 'calendar-event' && n.content.data?.eventId === eventId,
+  );
+}
+
+export async function scheduleCalendarTodoNotification(todo: {
+  id: string;
+  title: string;
+  due_date: string;
+  due_time: string | null;
+  reminder_offset: number;
+}): Promise<void> {
+  if (Platform.OS === 'web') return;
+  const { status } = await Notifications.getPermissionsAsync();
+  if (status !== 'granted') return;
+
+  await cancelNotifications(
+    (n) => n.content.data?.kind === 'calendar-todo' && n.content.data?.todoId === todo.id,
+  );
+
+  let triggerDate: Date | null = null;
+
+  if (todo.due_time) {
+    const [hours, minutes] = todo.due_time.split(':').map(Number);
+    const d = new Date(todo.due_date);
+    d.setHours(hours, minutes, 0, 0);
+    triggerDate = d;
+  } else {
+    // No time: remind at 9:00 on the due date.
+    const d = new Date(todo.due_date);
+    d.setHours(9, 0, 0, 0);
+    triggerDate = d;
+  }
+
+  if (triggerDate) {
+    triggerDate.setMinutes(triggerDate.getMinutes() - todo.reminder_offset);
+  }
+
+  if (!triggerDate || triggerDate <= new Date()) return;
+
+  await Notifications.scheduleNotificationAsync({
+    content: {
+      title: `ToDo: ${todo.title}`,
+      body: `Due in ${todo.reminder_offset} minute${todo.reminder_offset !== 1 ? 's' : ''}.`,
+      sound: true,
+      data: { kind: 'calendar-todo', todoId: todo.id },
+    },
+    trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: triggerDate },
+    identifier: `calendar-todo-${todo.id}`,
+  });
+}
+
+export async function cancelCalendarTodoNotification(todoId: string): Promise<void> {
+  if (Platform.OS === 'web') return;
+  await cancelNotifications(
+    (n) => n.content.data?.kind === 'calendar-todo' && n.content.data?.todoId === todoId,
+  );
+}
