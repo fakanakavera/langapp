@@ -209,6 +209,11 @@ export default function BookScreen() {
         variant="secondary"
         onPress={toggleListen}
       />
+      <UiButton
+        label="Read by sentence"
+        variant="secondary"
+        onPress={() => router.push(`/book/${id}/read-sentences` as never)}
+      />
 
       {visible.map((paragraph, paragraphIndex) => {
         const tokens = tokenizeParagraph(paragraph);

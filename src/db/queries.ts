@@ -371,6 +371,23 @@ export async function listExamples(entryId: string): Promise<Example[]> {
   );
 }
 
+/**
+ * Every example phrase for entries that have a card in the deck. DISTINCT
+ * keeps an entry shared across cards (e.g. recognition + production) from
+ * showing its phrases twice. Examples live on the entry, so a word shared
+ * between decks shows the same phrases in each of them.
+ */
+export async function listExamplesForDeck(deckId: string): Promise<Example[]> {
+  return getDb().getAllAsync<Example>(
+    `SELECT DISTINCT e.*
+     FROM examples e
+     JOIN cards c ON c.entry_id = e.entry_id
+     WHERE c.deck_id = ?
+     ORDER BY e.created_at DESC`,
+    deckId,
+  );
+}
+
 export type EntryWithoutExamples = {
   entry_id: string;
   lemma: string;

@@ -267,6 +267,11 @@ export default function DeckScreen() {
         onPress={() => router.push({ pathname: '/reading/[id]', params: { id } })}
       />
       <UiButton
+        label="Read phrases"
+        variant="secondary"
+        onPress={() => router.push(`/deck/${id}/read-phrases` as never)}
+      />
+      <UiButton
         label="Case trainer"
         variant="secondary"
         onPress={() => router.push({ pathname: '/cases/[id]', params: { id } })}
@@ -410,5 +415,11 @@ const styles = StyleSheet.create({
   levelBadge: {
     marginTop: 2,
     marginBottom: 4,
+  },
+  phraseRow: {
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    marginTop: 6,
+    borderRadius: 6,
   },
 });

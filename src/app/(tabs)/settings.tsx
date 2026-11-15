@@ -13,18 +13,28 @@ import { UiButton } from '@/components/ui-button';
 import { Spacing } from '@/constants/theme';
 import { MAX_MASTERY_TIER } from '@/lib/mastery';
 import {
+  addUserDictionaryEntry as addToUserDict,
+  RU_EN_DICTIONARY,
+  removeUserDictionaryEntry as removeFromUserDict,
+} from '@/lib/ru-en-dictionary';
+import { normalizeRussian, stripAccents } from '@/morphology/dictionary';
+import {
   deckNameExists,
   getBookMinTranslationTier,
   getStudyingLimit,
+  listAllEntries,
   listDeckSummaries,
+  listUserDictionary,
   listWordsWithoutPhrasesForDecks,
   importPhrasesForDecks,
+  removeUserDictionaryEntry as removeUserDictEntry,
   setBookMinTranslationTier,
   setStudyingLimit,
   unlockNextCards,
+  upsertUserDictionaryEntry,
 } from '@/db/queries';
 import type { DeckSummary } from '@/db/types';
-import type { WordWithoutPhrase } from '@/db/queries';
+import type { UserDictionaryEntry, WordWithoutPhrase } from '@/db/queries';
 import { parsePhraseText } from '@/lib/phrase-import';
 import { useTheme } from '@/hooks/use-theme';
 import { useDatabase } from '@/providers/database-provider';
@@ -54,6 +64,16 @@ export default function SettingsScreen() {
   const [exportWords, setExportWords] = useState<WordWithoutPhrase[]>([]);
   const [exportText, setExportText] = useState('');
   const [exportBusy, setExportBusy] = useState(false);
+
+  // Dictionary coverage: deck words missing from the bundled dictionary
+  const [missingWords, setMissingWords] = useState<string[]>([]);
+  const [checkingDict, setCheckingDict] = useState(false);
+
+  // User dictionary: custom word -> translation overrides
+  const [userDict, setUserDictState] = useState<UserDictionaryEntry[]>([]);
+  const [newWord, setNewWord] = useState('');
+  const [newTranslation, setNewTranslation] = useState('');
+  const [savingWord, setSavingWord] = useState(false);
 
   // Import phrases from file into selected decks
   const [phraseFiles, setPhraseFiles] = useState<PickedFile[]>([]);
@@ -185,14 +205,16 @@ export default function SettingsScreen() {
       listDeckSummaries(),
       getStudyingLimit(),
       getBookMinTranslationTier(),
+      listUserDictionary(),
     ]).then(
-      ([rows, limit, tier]) => {
+      ([rows, limit, tier, dict]) => {
         if (cancelled) return;
         setDecks(rows);
         setStudyingLimitState(limit);
         setLimitDraft(String(limit));
         setBookTierState(tier);
         setTierDraft(String(tier));
+        setUserDictState(dict);
       },
       (error) => {
         if (!cancelled) {
@@ -317,6 +339,98 @@ export default function SettingsScreen() {
     }
   }
 
+  async function onCheckDictionaryCoverage() {
+    setCheckingDict(true);
+    try {
+      const entries = await listAllEntries();
+      const missing: string[] = [];
+      for (const entry of entries) {
+        const norm = normalizeRussian(stripAccents(entry.lemma));
+        if (norm && !RU_EN_DICTIONARY.has(norm)) {
+          missing.push(entry.lemma);
+        }
+      }
+      setMissingWords(missing);
+    } catch (error) {
+      Alert.alert(
+        'Could not check dictionary',
+        error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      setCheckingDict(false);
+    }
+  }
+
+  async function onShareMissingWords() {
+    if (missingWords.length === 0) return;
+    const text = missingWords.join('\n');
+    const filename = `langapp-missing-dictionary-words-${new Date().toISOString().slice(0, 10)}.txt`;
+    const file = new File(Paths.cache, filename);
+    if (file.exists) {
+      file.delete();
+    }
+    file.create();
+    file.write(text);
+    try {
+      await Sharing.shareAsync(file.uri, {
+        mimeType: 'text/plain',
+        UTI: 'public.plain-text',
+        dialogTitle: 'Words missing from dictionary',
+      });
+    } catch (error) {
+      Alert.alert(
+        'Could not share list',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+
+  async function onLoadUserDictionary() {
+    const entries = await listUserDictionary();
+    setUserDictState(entries);
+  }
+
+  async function onAddUserDictionaryEntry() {
+    const lemma = newWord.trim();
+    const gloss = newTranslation.trim();
+    if (!lemma || !gloss) {
+      Alert.alert('Invalid entry', 'Enter both a word and its translation.');
+      return;
+    }
+    setSavingWord(true);
+    try {
+      await upsertUserDictionaryEntry({ lemma, gloss });
+      addToUserDict(lemma, gloss);
+      setNewWord('');
+      setNewTranslation('');
+      await onLoadUserDictionary();
+      Alert.alert(
+        'Added to dictionary',
+        `"${lemma}" → "${gloss}"`,
+      );
+    } catch (error) {
+      Alert.alert(
+        'Could not add entry',
+        error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      setSavingWord(false);
+    }
+  }
+
+  async function onRemoveUserDictionaryEntry(id: string, lemma: string) {
+    try {
+      await removeUserDictEntry(id);
+      removeFromUserDict(lemma);
+      setUserDictState(userDict.filter((e) => e.id !== id));
+    } catch (error) {
+      Alert.alert(
+        'Could not remove entry',
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+
   const nameHint =
     nameStatus === 'taken'
       ? 'That name is already used — pick another.'
@@ -400,6 +514,98 @@ export default function SettingsScreen() {
             tierDraft === String(bookTier)
           }
         />
+      </CardBlock>
+
+      <CardBlock>
+        <ThemedText type="smallBold">Dictionary coverage</ThemedText>
+        <ThemedText type="small" themeColor="textSecondary">
+          Compares every word in your decks against the bundled Russian→English
+          dictionary and lists words that have no translation. Share the list to
+          add them to the dictionary below.
+        </ThemedText>
+        <UiButton
+          label={checkingDict ? 'Checking…' : 'Check dictionary coverage'}
+          disabled={checkingDict}
+          onPress={onCheckDictionaryCoverage}
+          variant="secondary"
+        />
+        {missingWords.length > 0 ? (
+          <>
+            <ThemedText type="smallBold" style={{ marginTop: 8 }}>
+              Missing from dictionary ({missingWords.length})
+            </ThemedText>
+            <ScrollView
+              contentContainerStyle={styles.wordList}
+              showsVerticalScrollIndicator={false}>
+              {missingWords.map((w, i) => (
+                <ThemedText key={i} type="small" themeColor="textSecondary">
+                  {w}
+                </ThemedText>
+              ))}
+            </ScrollView>
+            <UiButton
+              label="Share missing words list"
+              variant="secondary"
+              onPress={onShareMissingWords}
+            />
+          </>
+        ) : null}
+      </CardBlock>
+
+      <CardBlock>
+        <ThemedText type="smallBold">User dictionary</ThemedText>
+        <ThemedText type="small" themeColor="textSecondary">
+          Add your own word → translation overrides. These take priority over
+          the bundled dictionary and are used when rendering phrases in books
+          and decks. Words already in a deck stay Russian regardless.
+        </ThemedText>
+        <TextInput
+          value={newWord}
+          onChangeText={setNewWord}
+          placeholder="Russian word"
+          placeholderTextColor={theme.textSecondary}
+          autoCapitalize="none"
+          style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+        />
+        <TextInput
+          value={newTranslation}
+          onChangeText={setNewTranslation}
+          placeholder="English translation"
+          placeholderTextColor={theme.textSecondary}
+          autoCapitalize="none"
+          style={[styles.input, { color: theme.text, backgroundColor: theme.backgroundElement }]}
+        />
+        <UiButton
+          label={savingWord ? 'Saving…' : 'Add to dictionary'}
+          onPress={onAddUserDictionaryEntry}
+          disabled={savingWord || !newWord.trim() || !newTranslation.trim()}
+          variant="secondary"
+        />
+        {userDict.length > 0 ? (
+          <>
+            <ThemedText type="smallBold" style={{ marginTop: 8 }}>
+              Your entries ({userDict.length})
+            </ThemedText>
+            {userDict.map((entry) => (
+              <CardBlock key={entry.id} style={styles.dictEntryRow}>
+                <ThemedText type="smallBold">{entry.lemma}</ThemedText>
+                <ThemedText type="small" themeColor="textSecondary">
+                  → {entry.gloss}
+                </ThemedText>
+                <UiButton
+                  label="Remove"
+                  variant="secondary"
+                  onPress={() => onRemoveUserDictionaryEntry(entry.id, entry.lemma)}
+                  style={styles.removeButton}
+                />
+              </CardBlock>
+            ))}
+          </>
+        ) : (
+          <ThemedText type="small" themeColor="textSecondary">
+            No custom entries yet.
+          </ThemedText>
+        )}
       </CardBlock>
 
       <CardBlock>
@@ -642,5 +848,15 @@ const styles = StyleSheet.create({
     fontSize: 14,
     textAlignVertical: 'top',
     marginTop: 8,
+  },
+  dictEntryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  removeButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
   },
 });
