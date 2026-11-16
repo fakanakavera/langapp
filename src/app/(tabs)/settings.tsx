@@ -5,6 +5,7 @@ import { File, Paths } from 'expo-file-system';
 
 import { getAiStatus } from '@/ai/engine';
 import { exportBackup, importDeckFile } from '@/backup/backup';
+import { exportGlobalBackup, importGlobalBackupFile } from '@/backup/global-backup';
 import * as DocumentPicker from 'expo-document-picker';
 import { CardBlock } from '@/components/card-block';
 import { Screen } from '@/components/screen';
@@ -47,6 +48,7 @@ export default function SettingsScreen() {
   const { refresh } = useDatabase();
   const theme = useTheme();
   const [busy, setBusy] = useState(false);
+  const [restoreBusy, setRestoreBusy] = useState(false);
   const [deckName, setDeckName] = useState('');
   const [checked, setChecked] = useState<{ name: string; taken: boolean } | null>(null);
   const [decks, setDecks] = useState<DeckSummary[]>([]);
@@ -286,6 +288,35 @@ export default function SettingsScreen() {
       Alert.alert('Import failed', error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function onExportGlobal() {
+    setRestoreBusy(true);
+    try {
+      await exportGlobalBackup();
+    } catch (error) {
+      Alert.alert('Export failed', error instanceof Error ? error.message : String(error));
+    } finally {
+      setRestoreBusy(false);
+    }
+  }
+
+  async function onImportGlobal() {
+    setRestoreBusy(true);
+    try {
+      const result = await importGlobalBackupFile();
+      if (result) {
+        refresh();
+        Alert.alert(
+          'Global backup restored',
+          `All data restored from backup — ${result.rows} rows across ${result.tables} tables.`,
+        );
+      }
+    } catch (error) {
+      Alert.alert('Restore failed', error instanceof Error ? error.message : String(error));
+    } finally {
+      setRestoreBusy(false);
     }
   }
 
@@ -633,6 +664,30 @@ export default function SettingsScreen() {
         variant="secondary"
         disabled={busy || nameStatus !== 'ok'}
       />
+
+      <CardBlock>
+        <ThemedText type="smallBold">Global backup (all data)</ThemedText>
+        <ThemedText type="small" themeColor="textSecondary">
+          Export/import everything — language cards & reviews, money, calendar, reader books,
+          user dictionary, and settings. Restoring replaces all data on this device. Use this to
+          move your data between the Windows and Linux instances of the app.
+        </ThemedText>
+        <UiButton
+          label={restoreBusy ? 'Working…' : 'Export full backup (all data)'}
+          onPress={onExportGlobal}
+          disabled={restoreBusy}
+        />
+        <UiButton
+          label={restoreBusy ? 'Working…' : 'Restore from backup file'}
+          variant="secondary"
+          onPress={onImportGlobal}
+          disabled={restoreBusy}
+        />
+        <ThemedText type="small" themeColor="textSecondary">
+          After exporting, save the file to iCloud / Files, then open it from the other machine
+          (e.g. via Tailscale) and choose Restore.
+        </ThemedText>
+      </CardBlock>
 
       <CardBlock>
         <ThemedText type="smallBold">Export words without phrases</ThemedText>

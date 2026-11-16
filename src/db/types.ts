@@ -144,3 +144,118 @@ export type BackupPayload = {
   reviews: ReviewRow[];
   examples: Example[];
 };
+
+export type MoneyCategory = {
+  id: string;
+  type: 'income' | 'expense';
+  name: string;
+  created_at: string;
+};
+
+export type MoneySubcategory = {
+  id: string;
+  category_id: string;
+  name: string;
+  amount_minor: number | null;
+  barcode: string | null;
+  created_at: string;
+};
+
+export type MoneyTransaction = {
+  id: string;
+  type: 'income' | 'expense';
+  category_id: string | null;
+  subcategory_id: string | null;
+  amount_minor: number;
+  quantity: number;
+  description: string;
+  occurred_at: string;
+  status: 'valid' | 'estimate';
+  recurring_rule_id: string | null;
+  recurring_date: string | null;
+  is_deleted: number;
+  created_at: string;
+};
+
+export type MoneyRecurring = {
+  id: string;
+  type: 'income' | 'expense';
+  category_id: string | null;
+  subcategory_id: string | null;
+  amount_minor: number;
+  description: string;
+  frequency: 'monthly_day' | 'every_days' | 'weekly';
+  day_of_month: number | null;
+  interval_days: number | null;
+  weekday: number | null;
+  start_date: string;
+  end_date: string | null;
+};
+
+export type MoneyBudget = {
+  id: string;
+  category_id: string;
+  amount_minor: number;
+};
+
+export type MoneySetting = {
+  key: string;
+  value: string;
+};
+
+export type CalendarEvent = {
+  id: string;
+  title: string;
+  description: string;
+  start_date: string;
+  end_date: string;
+  is_all_day: number;
+  reminder_offset: number;
+  recurrence_type: 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly';
+  recurrence_end_date: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type CalendarTodo = {
+  id: string;
+  title: string;
+  description: string;
+  due_date: string;
+  due_time: string | null;
+  is_completed: number;
+  reminder_offset: number;
+  recurrence_type: 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly';
+  recurrence_end_date: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type GlobalBackupPayload = {
+  version: 2;
+  exportedAt: string;
+  // Language learning
+  decks: Deck[];
+  entries: Entry[];
+  inflections: Inflection[];
+  cards: CardRow[];
+  reviews: ReviewRow[];
+  examples: Example[];
+  // Reader
+  books: Book[];
+  unknownWords: UnknownWord[];
+  // User dictionary
+  userDictionary: UserDictionaryEntry[];
+  // Money
+  moneyCategories: MoneyCategory[];
+  moneySubcategories: MoneySubcategory[];
+  moneyTransactions: MoneyTransaction[];
+  moneyRecurring: MoneyRecurring[];
+  moneyBudgets: MoneyBudget[];
+  moneySettings: MoneySetting[];
+  // Calendar
+  calendarEvents: CalendarEvent[];
+  calendarTodos: CalendarTodo[];
+  // App settings
+  meta: { key: string; value: string }[];
+};
