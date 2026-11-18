@@ -308,10 +308,10 @@ export default function MoneyHomeScreen() {
         .map((transaction) => ({ ...transaction, scheduled: true })),
     [periodTransactions],
   );
-  const expenseTotal = validPeriodTransactions
+  const expenseTotal = periodTransactions
     .filter((transaction) => transaction.type === 'expense')
     .reduce((total, transaction) => total + transaction.amount_minor, 0);
-  const incomeTotal = validPeriodTransactions
+  const incomeTotal = periodTransactions
     .filter((transaction) => transaction.type === 'income')
     .reduce((total, transaction) => total + transaction.amount_minor, 0);
 
@@ -1201,8 +1201,8 @@ export default function MoneyHomeScreen() {
               {formatMoney(incomeTotal - expenseTotal, preferences.currency)}
             </ThemedText>
             <ThemedText themeColor="textSecondary">
-              Only actual transactions count toward totals. Estimates stay out until you confirm
-              them.
+              Totals include planned (estimate) spending. Confirm an estimate when the actual
+              amount is known.
             </ThemedText>
           </CardBlock>
           <CardBlock>
