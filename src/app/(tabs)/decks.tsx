@@ -1,6 +1,14 @@
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useRef, useState } from 'react';
 import { Alert, Pressable, StyleSheet, TextInput, View } from 'react-native';
+import { PanGestureHandler } from 'react-native-gesture-handler';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withSpring,
+  useAnimatedReaction,
+  runOnJS,
+} from 'react-native-reanimated';
 import Swipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
 
 import { CardBlock } from '@/components/card-block';
@@ -18,6 +26,8 @@ import type { DeckSummary } from '@/db/types';
 import { useTheme } from '@/hooks/use-theme';
 import { useDatabase } from '@/providers/database-provider';
 
+const ROW_HEIGHT = 110;
+
 export default function DecksScreen() {
   const router = useRouter();
   const theme = useTheme();
@@ -25,6 +35,8 @@ export default function DecksScreen() {
   const [decks, setDecks] = useState<DeckSummary[]>([]);
   const [name, setName] = useState('');
   const [reorderMode, setReorderMode] = useState(false);
+  // Index of the deck currently being dragged (-1 when none).
+  const [draggedIndex, setDraggedIndex] = useState(-1);
 
   useFocusEffect(
     useCallback(() => {
@@ -49,14 +61,17 @@ export default function DecksScreen() {
     router.push(`/deck/${deck.id}`);
   }
 
-  function moveDeck(id: string, direction: 'up' | 'down') {
+  /**
+   * Move the deck at `fromIndex` to `toIndex` and persist the new order.
+   * Called live while dragging so the list updates under the finger.
+   */
+  function reorder(fromIndex: number, toIndex: number) {
+    if (fromIndex === toIndex || toIndex < 0 || toIndex >= decks.length) return;
     setDecks((current) => {
-      const index = current.findIndex((deck) => deck.id === id);
-      const target = direction === 'up' ? index - 1 : index + 1;
-      if (index < 0 || target < 0 || target >= current.length) return current;
       const next = [...current];
-      [next[index], next[target]] = [next[target], next[index]];
-      void setDeckPositions(next.map((deck) => deck.id));
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      void setDeckPositions(next.map((d) => d.id));
       return next;
     });
   }
@@ -76,7 +91,7 @@ export default function DecksScreen() {
       {reorderMode && (
         <View style={styles.reorderBanner}>
           <ThemedText type="small" themeColor="textSecondary">
-            Tap the arrows to move a deck up or down, then tap Done.
+            Hold the ≡ handle and slide a deck up or down to reorder, then tap Done.
           </ThemedText>
         </View>
       )}
@@ -88,10 +103,14 @@ export default function DecksScreen() {
           {reorderMode ? 'Done reordering' : 'Reorder decks'}
         </ThemedText>
       </Pressable>
-      {decks.map((deck) => (
+      {decks.map((deck, index) => (
         <DeckRow
           key={deck.id}
+          index={index}
+          total={decks.length}
           deck={deck}
+          isDragging={draggedIndex === index}
+          reorderMode={reorderMode}
           onOpen={() => router.push(`/deck/${deck.id}`)}
           onDeleted={(id) => {
             // Remove immediately; the focus-effect refetch confirms it.
@@ -99,11 +118,8 @@ export default function DecksScreen() {
             setDecks((prev) => prev.filter((d) => d.id !== id));
             refresh();
           }}
-          reorderMode={reorderMode}
-          isFirst={decks[0]?.id === deck.id}
-          isLast={decks[decks.length - 1]?.id === deck.id}
-          onMoveUp={() => void moveDeck(deck.id, 'up')}
-          onMoveDown={() => void moveDeck(deck.id, 'down')}
+          setDraggedIndex={setDraggedIndex}
+          onReorder={reorder}
         />
       ))}
     </Screen>
@@ -111,26 +127,97 @@ export default function DecksScreen() {
 }
 
 function DeckRow({
+  index,
+  total,
   deck,
+  isDragging,
+  reorderMode,
   onOpen,
   onDeleted,
-  reorderMode,
-  isFirst,
-  isLast,
-  onMoveUp,
-  onMoveDown,
+  setDraggedIndex,
+  onReorder,
 }: {
+  index: number;
+  total: number;
   deck: DeckSummary;
+  isDragging: boolean;
+  reorderMode: boolean;
   onOpen: () => void;
   onDeleted: (id: string) => void;
-  reorderMode: boolean;
-  isFirst: boolean;
-  isLast: boolean;
-  onMoveUp: () => void;
-  onMoveDown: () => void;
+  setDraggedIndex: (index: number) => void;
+  onReorder: (fromIndex: number, toIndex: number) => void;
 }) {
   const theme = useTheme();
   const swipeable = useRef<Swipeable | null>(null);
+  // Vertical offset of this card while it is being dragged. Local to each row
+  // since only one card is ever dragged at a time.
+  const dragY = useSharedValue(0);
+  // Logical index of the dragged card as it moves through the list during a
+  // single drag gesture (resets to `index` when a new drag starts).
+  const logicalIndex = useRef(index);
+
+  const cardStyle = useAnimatedStyle(() => ({
+    transform: [
+      {
+        translateY: isDragging ? dragY.value : 0,
+      },
+      {
+        scale: isDragging ? 1.05 : 1,
+      },
+    ],
+    ...(isDragging
+      ? {
+          shadowColor: '#000',
+          shadowOffset: { width: 0, height: 6 },
+          shadowOpacity: 0.35,
+          shadowRadius: 12,
+          elevation: 12,
+          zIndex: 100,
+        }
+      : {}),
+  }));
+
+  // Live reorder: as the card is dragged past a neighbor, swap them in state.
+  useAnimatedReaction(
+    () => (isDragging ? dragY.value : 0),
+    (y) => {
+      if (!reorderMode || !isDragging) return;
+      const target = Math.round(y / ROW_HEIGHT) + logicalIndex.current;
+      const clamped = Math.max(0, Math.min(total - 1, target));
+      if (clamped !== logicalIndex.current) {
+        runOnJS(onReorder)(logicalIndex.current, clamped);
+        logicalIndex.current = clamped;
+        // eslint-disable-next-line react-hooks/immutability
+        dragY.value = 0;
+      }
+    },
+    [],
+  );
+
+  const handleGestureEvent = (event: {
+    nativeEvent: { translationY: number };
+  }) => {
+    // eslint-disable-next-line react-hooks/immutability
+    dragY.value = event.nativeEvent.translationY;
+  };
+
+  const handleStateChange = (event: {
+    nativeEvent: { state: number; oldState: number };
+  }) => {
+    if (!reorderMode) return;
+    const { state } = event.nativeEvent;
+    // 4 = State.ACTIVE (gesture handler state constants)
+    if (state === 4) {
+      setDraggedIndex(index);
+      logicalIndex.current = index;
+      // eslint-disable-next-line react-hooks/immutability
+      dragY.value = 0;
+    } else if (state === 5 || state === 6) {
+      // END or CANCELLED
+      dragY.value = withSpring(0);
+      setDraggedIndex(-1);
+    }
+  };
 
   function confirmDelete() {
     swipeable.current?.close();
@@ -160,32 +247,16 @@ function DeckRow({
   return (
     <View style={styles.deckContainer}>
       {reorderMode ? (
-        <View style={styles.moveButtons}>
-          <Pressable
-            accessibilityLabel={`Move ${deck.name} up`}
-            onPress={(event) => {
-              event.stopPropagation();
-              onMoveUp();
-            }}
-            disabled={isFirst}
-            style={[styles.moveButton, { borderColor: theme.backgroundSelected }]}>
-            <ThemedText style={{ color: theme.tint, fontWeight: '700', fontSize: 18 }}>
-              ▲
-            </ThemedText>
-          </Pressable>
-          <Pressable
-            accessibilityLabel={`Move ${deck.name} down`}
-            onPress={(event) => {
-              event.stopPropagation();
-              onMoveDown();
-            }}
-            disabled={isLast}
-            style={[styles.moveButton, { borderColor: theme.backgroundSelected }]}>
-            <ThemedText style={{ color: theme.tint, fontWeight: '700', fontSize: 18 }}>
-              ▼
-            </ThemedText>
-          </Pressable>
-        </View>
+        <PanGestureHandler
+          onGestureEvent={handleGestureEvent}
+          onHandlerStateChange={handleStateChange}
+          hitSlop={{ top: 12, bottom: 12, left: 24, right: 12 }}>
+          <Animated.View style={[styles.dragHandle, cardStyle]}>
+            <View style={styles.dash} />
+            <View style={styles.dash} />
+            <View style={styles.dash} />
+          </Animated.View>
+        </PanGestureHandler>
       ) : null}
       <Swipeable
         ref={swipeable}
@@ -198,12 +269,17 @@ function DeckRow({
             </ThemedText>
           </Pressable>
         )}>
-        <CardBlock onPress={onOpen} style={reorderMode ? styles.reorderCard : undefined}>
-          <ThemedText type="smallBold">{deck.name}</ThemedText>
-          <ThemedText type="small" themeColor="textSecondary">
-            {deck.due_count} due · {deck.studying_count}/{deck.studying_limit} studying · {deck.card_count} total
-          </ThemedText>
-        </CardBlock>
+        <Animated.View style={cardStyle}>
+          <CardBlock
+            onPress={onOpen}
+            style={[styles.reorderCard, { opacity: isDragging ? 0.9 : 1 }]}
+          >
+            <ThemedText type="smallBold">{deck.name}</ThemedText>
+            <ThemedText type="small" themeColor="textSecondary">
+              {deck.due_count} due · {deck.studying_count}/{deck.studying_limit} studying · {deck.card_count} total
+            </ThemedText>
+          </CardBlock>
+        </Animated.View>
       </Swipeable>
     </View>
   );
@@ -239,19 +315,20 @@ const styles = StyleSheet.create({
   deckContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.two,
     paddingHorizontal: Spacing.three,
   },
-  moveButtons: {
-    gap: Spacing.one,
-  },
-  moveButton: {
-    width: 34,
-    height: 34,
-    borderWidth: 1,
-    borderRadius: 8,
+  dragHandle: {
+    width: 44,
     alignItems: 'center',
     justifyContent: 'center',
+    paddingVertical: Spacing.one,
+  },
+  dash: {
+    width: 18,
+    height: 2,
+    borderRadius: 1,
+    backgroundColor: '#9AA0A6',
+    marginVertical: 3,
   },
   reorderCard: {
     flex: 1,
