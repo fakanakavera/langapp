@@ -1,6 +1,7 @@
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useState } from 'react';
-import { Alert, Pressable, View } from 'react-native';
+import { useTheme } from '@/hooks/use-theme';
+import { Alert, Pressable, StyleSheet, View } from 'react-native';
 
 import { CardBlock } from '@/components/card-block';
 import { PieChart, type PieChartSegment } from '@/components/pie-chart';
@@ -34,12 +35,14 @@ function leechReason(leech: LeechCard): string {
 export default function DeckStatsScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
+  const theme = useTheme();
   const { revision, refresh } = useDatabase();
   const [deck, setDeck] = useState<Deck | null>(null);
   const [stats, setStats] = useState<DeckStats | null>(null);
   const [leeches, setLeeches] = useState<LeechCard[]>([]);
   const [drilling, setDrilling] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [showStudyCount, setShowStudyCount] = useState(false);
   useFocusEffect(
     useCallback(() => {
       if (!id) return;
@@ -143,9 +146,30 @@ export default function DeckStatsScreen() {
         <>
           <CardBlock>
             <ThemedText type="smallBold">Study time</ThemedText>
-            <ThemedText type="title">{formatDuration(stats.studyMs)}</ThemedText>
+            <Pressable
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: showStudyCount }}
+              onPress={() => setShowStudyCount((value) => !value)}
+              style={styles.checkRow}>
+              <ThemedText style={{ color: theme.tint, fontSize: 20 }}>
+                {showStudyCount ? '☑' : '☐'}
+              </ThemedText>
+              <View style={styles.flex}>
+                <ThemedText>Show review count instead</ThemedText>
+                <ThemedText type="small" themeColor="textSecondary">
+                  Switch the big number from time spent to reviews completed.
+                </ThemedText>
+              </View>
+            </Pressable>
+            <ThemedText type="title">
+              {showStudyCount
+                ? `${stats.totalReviews.toLocaleString()} reviews`
+                : formatDuration(stats.studyMs)}
+            </ThemedText>
             <ThemedText type="small" themeColor="textSecondary">
-              {stats.totalReviews} cards reviewed · {stats.distinctCards} unique
+              {showStudyCount
+                ? `${stats.distinctCards} unique words · ${formatDuration(stats.studyMs)} spent`
+                : `${stats.totalReviews} cards reviewed · ${stats.distinctCards} unique`}
             </ThemedText>
           </CardBlock>
 
@@ -223,3 +247,15 @@ export default function DeckStatsScreen() {
     </Screen>
   );
 }
+
+const styles = StyleSheet.create({
+  checkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 6,
+  },
+  flex: {
+    flex: 1,
+  },
+});

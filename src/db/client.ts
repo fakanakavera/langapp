@@ -212,6 +212,22 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
     }
   }
 
+  // --- New column: decks.position (manual deck order) ---
+  if (!deckColumns.has('position')) {
+    await db.execAsync(`
+      ALTER TABLE decks ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
+    `);
+    // Backfill existing decks in creation order so the current order is kept.
+    const existingDecks = await db.getAllAsync<{ id: string }>(
+      'SELECT id FROM decks ORDER BY created_at ASC, id ASC',
+    );
+    await db.withTransactionAsync(async () => {
+      for (let index = 0; index < existingDecks.length; index += 1) {
+        await db.runAsync('UPDATE decks SET position = ? WHERE id = ?', index, existingDecks[index].id);
+      }
+    });
+  }
+
   // --- New columns: cards.locked, cards.unlock_order ---
   const cardCols2 = await db.getAllAsync<{ name: string }>(
     "PRAGMA table_info(cards)"

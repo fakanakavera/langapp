@@ -36,6 +36,7 @@ import {
 } from '@/money/dates';
 import {
   deleteCategory,
+  deleteEstimate,
   deleteMoneyTransaction,
   deleteRecurringRule,
   deleteSubcategory,
@@ -115,6 +116,7 @@ export default function MoneyHomeScreen() {
   const [pastStatsMonths, setPastStatsMonths] = useState<PastStatsMonths>(1);
   const [futureStatsMonths, setFutureStatsMonths] = useState<FutureStatsMonths>(3);
   const [includeEstimates, setIncludeEstimates] = useState(false);
+  const [includeEstimatesInBudget, setIncludeEstimatesInBudget] = useState(true);
   const statsDateRange = useMemo(() => {
     const today = parseLocalDate(localDateString(new Date()));
     if (statsDirection === 'past') {
@@ -291,6 +293,14 @@ export default function MoneyHomeScreen() {
     () => periodTransactions.filter((transaction) => transaction.status === 'valid'),
     [periodTransactions],
   );
+  // Budget spending: actual transactions, plus estimates when the user opts in.
+  const budgetTransactions = useMemo(() => {
+    if (!includeEstimatesInBudget) return validPeriodTransactions;
+    const estimates = periodTransactions.filter(
+      (transaction) => transaction.status === 'estimate',
+    );
+    return [...validPeriodTransactions, ...estimates];
+  }, [includeEstimatesInBudget, periodTransactions, validPeriodTransactions]);
   const recurringEvents = useMemo<CalendarEntry[]>(
     () =>
       periodTransactions
@@ -524,15 +534,49 @@ export default function MoneyHomeScreen() {
       : entry.type === 'expense'
         ? 'expense'
         : 'income';
-    Alert.alert(`Delete ${kind}?`, 'This action cannot be undone.', [
+    // A plain (confirmed) transaction is removed outright.
+    if (!entry.scheduled) {
+      Alert.alert(`Delete ${kind}?`, 'This action cannot be undone.', [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () =>
+            void runWrite(
+              () => deleteMoneyTransaction(entry.id),
+              `${kind[0].toUpperCase()}${kind.slice(1)} deleted.`,
+            ),
+        },
+      ]);
+      return;
+    }
+    // An estimate belongs to a repeating schedule: let the user choose the
+    // scope of the deletion.
+    Alert.alert('Delete estimate?', `Remove this ${kind} from the repeating schedule:`, [
       { text: 'Cancel', style: 'cancel' },
       {
-        text: 'Delete',
+        text: 'Only this one',
+        onPress: () =>
+          void runWrite(
+            () => deleteEstimate({ id: entry.id, mode: 'one' }),
+            'This estimate deleted.',
+          ),
+      },
+      {
+        text: 'After this date',
+        onPress: () =>
+          void runWrite(
+            () => deleteEstimate({ id: entry.id, mode: 'following' }),
+            'Later estimates deleted; this date is kept.',
+          ),
+      },
+      {
+        text: 'All',
         style: 'destructive',
         onPress: () =>
           void runWrite(
-            () => deleteMoneyTransaction(entry.id),
-            `${kind[0].toUpperCase()}${kind.slice(1)} deleted.`,
+            () => deleteEstimate({ id: entry.id, mode: 'all' }),
+            'Schedule and all its estimates deleted.',
           ),
       },
     ]);
@@ -1163,10 +1207,25 @@ export default function MoneyHomeScreen() {
           </CardBlock>
           <CardBlock>
             <ThemedText type="smallBold">Budget progress</ThemedText>
+            <Pressable
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: includeEstimatesInBudget }}
+              onPress={() => setIncludeEstimatesInBudget((value) => !value)}
+              style={styles.checkRow}>
+              <ThemedText style={{ color: theme.tint, fontSize: 20 }}>
+                {includeEstimatesInBudget ? '☑' : '☐'}
+              </ThemedText>
+              <View style={styles.flex}>
+                <ThemedText>Include estimates in budget</ThemedText>
+                <ThemedText type="small" themeColor="textSecondary">
+                  Counts planned spending toward your cycle targets.
+                </ThemedText>
+              </View>
+            </Pressable>
             <BudgetSummary
               budgets={data.budgets}
               categories={expenseCategories}
-              transactions={validPeriodTransactions}
+              transactions={budgetTransactions}
               currency={preferences.currency}
             />
           </CardBlock>
@@ -1611,10 +1670,25 @@ export default function MoneyHomeScreen() {
           </CardBlock>
           <CardBlock>
             <ThemedText type="smallBold">Budget progress</ThemedText>
+            <Pressable
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: includeEstimatesInBudget }}
+              onPress={() => setIncludeEstimatesInBudget((value) => !value)}
+              style={styles.checkRow}>
+              <ThemedText style={{ color: theme.tint, fontSize: 20 }}>
+                {includeEstimatesInBudget ? '☑' : '☐'}
+              </ThemedText>
+              <View style={styles.flex}>
+                <ThemedText>Include estimates in budget</ThemedText>
+                <ThemedText type="small" themeColor="textSecondary">
+                  Counts planned spending toward your cycle targets.
+                </ThemedText>
+              </View>
+            </Pressable>
             <BudgetSummary
               budgets={data.budgets}
               categories={expenseCategories}
-              transactions={validPeriodTransactions}
+              transactions={budgetTransactions}
               currency={preferences.currency}
             />
             {data.budgets.length > 0 && (

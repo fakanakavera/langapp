@@ -387,6 +387,72 @@ export async function deleteMoneyTransaction(id: string): Promise<void> {
   }
 }
 
+/**
+ * Delete one estimate transaction, with three scopes:
+ * - 'one': soft-delete only this estimate.
+ * - 'following': soft-delete every estimate of the same repeating schedule on
+ *   dates after this one (this date is kept), and stop the schedule from
+ *   generating later dates by capping its end date.
+ * - 'all': soft-delete every estimate of the schedule and remove the schedule.
+ * Valid (confirmed) transactions and the schedule itself are never removed by
+ * 'one' or 'following'.
+ */
+export async function deleteEstimate(input: {
+  id: string;
+  mode: 'one' | 'following' | 'all';
+}): Promise<void> {
+  const db = getDb();
+  const row = await db.getFirstAsync<{
+    recurring_rule_id: string | null;
+    occurred_at: string;
+  }>(
+    `SELECT recurring_rule_id, occurred_at FROM money_transactions
+     WHERE id = ? AND status = 'estimate'`,
+    input.id,
+  );
+  if (!row) {
+    throw new Error('This estimate is no longer available to delete.');
+  }
+  await db.withTransactionAsync(async () => {
+    if (input.mode === 'one' || !row.recurring_rule_id) {
+      const result = await db.runAsync(
+        `UPDATE money_transactions SET is_deleted = 1
+         WHERE id = ? AND status = 'estimate' AND is_deleted = 0`,
+        input.id,
+      );
+      if (result.changes !== 1) {
+        throw new Error('This estimate is no longer available to delete.');
+      }
+      return;
+    }
+    const { recurring_rule_id, occurred_at } = row;
+    if (input.mode === 'following') {
+      // Keep this date and everything before it; remove later dates and cap the
+      // schedule so they are not materialized again.
+      await db.runAsync(
+        `UPDATE money_transactions SET is_deleted = 1
+         WHERE recurring_rule_id = ? AND status = 'estimate'
+           AND occurred_at > ? AND is_deleted = 0`,
+        recurring_rule_id,
+        occurred_at,
+      );
+      await db.runAsync(
+        `UPDATE money_recurring SET end_date = ? WHERE id = ?`,
+        occurred_at,
+        recurring_rule_id,
+      );
+      return;
+    }
+    // mode === 'all': drop every future estimate of the schedule and the rule.
+    await db.runAsync(
+      `UPDATE money_transactions SET is_deleted = 1
+       WHERE recurring_rule_id = ? AND status = 'estimate' AND is_deleted = 0`,
+      recurring_rule_id,
+    );
+    await db.runAsync('DELETE FROM money_recurring WHERE id = ?', recurring_rule_id);
+  });
+}
+
 export async function saveCategory(type: TransactionType, name: string, id?: string): Promise<void> {
   const db = getDb();
   const cleanName = name.trim();

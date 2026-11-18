@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS decks (
   description TEXT NOT NULL DEFAULT '',
   pos_category TEXT CHECK (pos_category IN ('noun', 'verb', 'adjective', 'adverb', 'pronoun', 'preposition', 'conjunction', 'interjection', 'number')),
   studying_limit INTEGER NOT NULL DEFAULT 60,
+  position INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );

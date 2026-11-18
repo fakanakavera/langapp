@@ -102,10 +102,24 @@ export async function listDeckSummaries(): Promise<DeckSummary[]> {
             (SELECT COUNT(*) FROM cards c WHERE c.deck_id = d.id AND c.due <= ? AND c.locked = 0) AS due_count,
             (SELECT COUNT(*) FROM cards c WHERE c.deck_id = d.id AND c.locked = 0 AND c.mastery_tier < ?) AS studying_count
      FROM decks d
-     ORDER BY d.updated_at DESC`,
+     ORDER BY d.position ASC, d.updated_at DESC`,
     now,
     MASTERY_GRADUATION_TIER,
   );
+}
+
+/**
+ * Persist a custom deck order. `orderedIds` lists deck ids from top to
+ * bottom; they are numbered 0, 1, 2 … so `listDeckSummaries` shows them in
+ * that order.
+ */
+export async function setDeckPositions(orderedIds: string[]): Promise<void> {
+  const db = getDb();
+  await db.withTransactionAsync(async () => {
+    for (let index = 0; index < orderedIds.length; index += 1) {
+      await db.runAsync('UPDATE decks SET position = ? WHERE id = ?', index, orderedIds[index]);
+    }
+  });
 }
 
 export async function getDeck(id: string): Promise<Deck | null> {
