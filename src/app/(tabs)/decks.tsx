@@ -3,10 +3,10 @@ import { useCallback, useRef, useState } from 'react';
 import { Alert, Pressable, StyleSheet, TextInput, View } from 'react-native';
 import { PanGestureHandler } from 'react-native-gesture-handler';
 import Animated, {
+  SharedValue,
   useSharedValue,
   useAnimatedStyle,
   withSpring,
-  useAnimatedReaction,
   runOnJS,
 } from 'react-native-reanimated';
 import Swipeable from 'react-native-gesture-handler/ReanimatedSwipeable';
@@ -37,6 +37,10 @@ export default function DecksScreen() {
   const [reorderMode, setReorderMode] = useState(false);
   // Index of the deck currently being dragged (-1 when none).
   const [draggedIndex, setDraggedIndex] = useState(-1);
+  // Shared vertical drag offset (px), drives both the dragged card and neighbor shifts.
+  const dragY = useSharedValue(0);
+  // Captured target row index at the moment the drag ends.
+  const targetIndex = useSharedValue(0);
 
   useFocusEffect(
     useCallback(() => {
@@ -62,10 +66,9 @@ export default function DecksScreen() {
   }
 
   /**
-   * Move the deck at `fromIndex` to `toIndex` and persist the new order.
-   * Called live while dragging so the list updates under the finger.
+   * Commit a reorder to local state + database once the drag ends.
    */
-  function reorder(fromIndex: number, toIndex: number) {
+  function commitReorder(fromIndex: number, toIndex: number) {
     if (fromIndex === toIndex || toIndex < 0 || toIndex >= decks.length) return;
     setDecks((current) => {
       const next = [...current];
@@ -91,7 +94,7 @@ export default function DecksScreen() {
       {reorderMode && (
         <View style={styles.reorderBanner}>
           <ThemedText type="small" themeColor="textSecondary">
-            Hold the ≡ handle and slide a deck up or down to reorder, then tap Done.
+            Hold the ≡ handle and slide a deck up or down to reorder, then lift your finger.
           </ThemedText>
         </View>
       )}
@@ -109,17 +112,18 @@ export default function DecksScreen() {
           index={index}
           total={decks.length}
           deck={deck}
-          isDragging={draggedIndex === index}
+          draggedIndex={draggedIndex}
+          dragY={dragY}
+          targetIndex={targetIndex}
           reorderMode={reorderMode}
           onOpen={() => router.push(`/deck/${deck.id}`)}
           onDeleted={(id) => {
             // Remove immediately; the focus-effect refetch confirms it.
-            // (Same local-first pattern as the review/quiz queues.)
             setDecks((prev) => prev.filter((d) => d.id !== id));
             refresh();
           }}
           setDraggedIndex={setDraggedIndex}
-          onReorder={reorder}
+          commitReorder={commitReorder}
         />
       ))}
     </Screen>
@@ -130,75 +134,76 @@ function DeckRow({
   index,
   total,
   deck,
-  isDragging,
+  draggedIndex,
+  dragY,
+  targetIndex,
   reorderMode,
   onOpen,
   onDeleted,
   setDraggedIndex,
-  onReorder,
+  commitReorder,
 }: {
   index: number;
   total: number;
   deck: DeckSummary;
-  isDragging: boolean;
+  draggedIndex: number;
+  dragY: SharedValue<number>;
+  targetIndex: SharedValue<number>;
   reorderMode: boolean;
   onOpen: () => void;
   onDeleted: (id: string) => void;
   setDraggedIndex: (index: number) => void;
-  onReorder: (fromIndex: number, toIndex: number) => void;
+  commitReorder: (fromIndex: number, toIndex: number) => void;
 }) {
   const theme = useTheme();
   const swipeable = useRef<Swipeable | null>(null);
-  // Vertical offset of this card while it is being dragged. Local to each row
-  // since only one card is ever dragged at a time.
-  const dragY = useSharedValue(0);
-  // Logical index of the dragged card as it moves through the list during a
-  // single drag gesture (resets to `index` when a new drag starts).
-  const logicalIndex = useRef(index);
+  const isDragging = draggedIndex === index;
 
-  const cardStyle = useAnimatedStyle(() => ({
-    transform: [
-      {
-        translateY: isDragging ? dragY.value : 0,
-      },
-      {
-        scale: isDragging ? 1.05 : 1,
-      },
-    ],
-    ...(isDragging
-      ? {
-          shadowColor: '#000',
-          shadowOffset: { width: 0, height: 6 },
-          shadowOpacity: 0.35,
-          shadowRadius: 12,
-          elevation: 12,
-          zIndex: 100,
-        }
-      : {}),
-  }));
+  const cardStyle = useAnimatedStyle(() => {
+    const isDragging = draggedIndex === index;
+    const y = isDragging ? dragY.value : 0;
 
-  // Live reorder: as the card is dragged past a neighbor, swap them in state.
-  useAnimatedReaction(
-    () => (isDragging ? dragY.value : 0),
-    (y) => {
-      if (!reorderMode || !isDragging) return;
-      const target = Math.round(y / ROW_HEIGHT) + logicalIndex.current;
-      const clamped = Math.max(0, Math.min(total - 1, target));
-      if (clamped !== logicalIndex.current) {
-        runOnJS(onReorder)(logicalIndex.current, clamped);
-        logicalIndex.current = clamped;
-        // eslint-disable-next-line react-hooks/immutability
-        dragY.value = 0;
+    // Neighbor shift: slide cards aside to make room for the dragged card.
+    let shift = 0;
+    let opacity = 1;
+    if (draggedIndex !== -1 && !isDragging) {
+      const dragRows = Math.round(dragY.value / ROW_HEIGHT);
+      const from = draggedIndex;
+      const to = Math.max(0, Math.min(total - 1, from + dragRows));
+      const between =
+        (from < to && index > from && index <= to) ||
+        (from > to && index < from && index >= to);
+      if (between) {
+        shift = from < to ? -ROW_HEIGHT : ROW_HEIGHT;
+        opacity = 0.7;
       }
-    },
-    [],
-  );
+    }
+
+    return {
+      transform: [{ translateY: y + shift }],
+      ...(isDragging
+        ? {
+            shadowColor: '#000',
+            shadowOffset: { width: 0, height: 8 },
+            shadowOpacity: 0.4,
+            shadowRadius: 16,
+            elevation: 16,
+            opacity: 0.95,
+            zIndex: 100,
+          }
+        : { opacity, zIndex: 0 }),
+    };
+  });
 
   const handleGestureEvent = (event: {
     nativeEvent: { translationY: number };
   }) => {
     // eslint-disable-next-line react-hooks/immutability
     dragY.value = event.nativeEvent.translationY;
+    const dragRows = Math.round(dragY.value / ROW_HEIGHT);
+    const t = Math.max(0, Math.min(total - 1, draggedIndex + dragRows));
+    // eslint-disable-next-line react-hooks/immutability
+    targetIndex.value = t;
   };
 
   const handleStateChange = (event: {
@@ -206,16 +211,22 @@ function DeckRow({
   }) => {
     if (!reorderMode) return;
     const { state } = event.nativeEvent;
-    // 4 = State.ACTIVE (gesture handler state constants)
+    // 4 = State.ACTIVE
     if (state === 4) {
-      setDraggedIndex(index);
-      logicalIndex.current = index;
+      runOnJS(setDraggedIndex)(index);
       // eslint-disable-next-line react-hooks/immutability
       dragY.value = 0;
+      // eslint-disable-next-line react-hooks/immutability
+      targetIndex.value = index;
     } else if (state === 5 || state === 6) {
       // END or CANCELLED
+      const t = targetIndex.value;
       dragY.value = withSpring(0);
-      setDraggedIndex(-1);
+      runOnJS(setDraggedIndex)(-1);
+      targetIndex.value = index;
+      if (t !== index) {
+        runOnJS(commitReorder)(index, t);
+      }
     }
   };
 
@@ -258,29 +269,34 @@ function DeckRow({
           </Animated.View>
         </PanGestureHandler>
       ) : null}
-      <Swipeable
-        ref={swipeable}
-        renderRightActions={() => (
-          <Pressable
-            onPress={confirmDelete}
-            style={[styles.deleteAction, { backgroundColor: theme.error }]}>
-            <ThemedText type="smallBold" style={styles.deleteLabel}>
-              Delete
-            </ThemedText>
-          </Pressable>
-        )}>
-        <Animated.View style={cardStyle}>
-          <CardBlock
-            onPress={onOpen}
-            style={[styles.reorderCard, { opacity: isDragging ? 0.9 : 1 }]}
-          >
-            <ThemedText type="smallBold">{deck.name}</ThemedText>
-            <ThemedText type="small" themeColor="textSecondary">
-              {deck.due_count} due · {deck.studying_count}/{deck.studying_limit} studying · {deck.card_count} total
-            </ThemedText>
-          </CardBlock>
-        </Animated.View>
-      </Swipeable>
+      <View style={styles.swipeableFill}>
+        <Swipeable
+          ref={swipeable}
+          renderRightActions={() => (
+            <Pressable
+              onPress={confirmDelete}
+              style={[styles.deleteAction, { backgroundColor: theme.error }]}>
+              <ThemedText type="smallBold" style={styles.deleteLabel}>
+                Delete
+              </ThemedText>
+            </Pressable>
+          )}>
+          <Animated.View style={[cardStyle, styles.cardFill]}>
+            <CardBlock
+              onPress={onOpen}
+              style={[
+                styles.reorderCard,
+                { opacity: isDragging ? 0.95 : 1 },
+              ]}
+            >
+              <ThemedText type="smallBold">{deck.name}</ThemedText>
+              <ThemedText type="small" themeColor="textSecondary">
+                {deck.due_count} due · {deck.studying_count}/{deck.studying_limit} studying · {deck.card_count} total
+              </ThemedText>
+            </CardBlock>
+          </Animated.View>
+        </Swipeable>
+      </View>
     </View>
   );
 }
@@ -313,9 +329,13 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.one,
   },
   deckContainer: {
+    width: '100%',
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: Spacing.three,
+  },
+  swipeableFill: {
+    flex: 1,
   },
   dragHandle: {
     width: 44,
@@ -332,5 +352,9 @@ const styles = StyleSheet.create({
   },
   reorderCard: {
     flex: 1,
+  },
+  cardFill: {
+    flex: 1,
+    width: '100%',
   },
 });
