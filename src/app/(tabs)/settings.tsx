@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useRouter } from 'expo-router';
 import { Alert, Pressable, ScrollView, StyleSheet, TextInput } from 'react-native';
 import * as Sharing from 'expo-sharing';
 import { File, Paths } from 'expo-file-system';
@@ -45,6 +46,7 @@ type PickedFile = { name: string; uri: string };
 type NameStatus = 'idle' | 'checking' | 'taken' | 'ok';
 
 export default function SettingsScreen() {
+  const router = useRouter();
   const { refresh } = useDatabase();
   const theme = useTheme();
   const [busy, setBusy] = useState(false);
@@ -474,6 +476,18 @@ export default function SettingsScreen() {
   return (
     <Screen tabInset>
       <ThemedText type="subtitle">Settings</ThemedText>
+
+      <CardBlock>
+        <ThemedText type="smallBold">Money tracker</ThemedText>
+        <ThemedText themeColor="textSecondary">
+          Manage categories, shared items, category-specific prices, and item tags.
+        </ThemedText>
+        <UiButton
+          label="Manage money categories & tags"
+          variant="secondary"
+          onPress={() => router.push('/money/manage')}
+        />
+      </CardBlock>
 
       <CardBlock>
         <ThemedText type="smallBold">Studying card limit per deck</ThemedText>

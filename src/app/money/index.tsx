@@ -73,6 +73,7 @@ import {
 
 type MoneyView = 'Overview' | 'Stats' | 'Calendar' | 'Add' | 'Settings';
 type StatsDirection = 'past' | 'future';
+type StatsSelectionMode = 'Categories' | 'Items' | 'Tags';
 type PastStatsMonths = 1 | 3 | 6 | 9 | 12;
 type FutureStatsMonths = 1 | 2 | 3 | 4 | 5 | 6 | 9 | 12;
 type MoneyData = Awaited<ReturnType<typeof loadMoneyData>>;
@@ -191,9 +192,11 @@ export default function MoneyHomeScreen() {
   const [batchEditingQuantity, setBatchEditingQuantity] = useState(false);
   const [budgetCategoryId, setBudgetCategoryId] = useState('all');
   const [budgetAmount, setBudgetAmount] = useState('');
+  const [statsSelectionMode, setStatsSelectionMode] =
+    useState<StatsSelectionMode>('Categories');
   const [selectedCategoryIds, setSelectedCategoryIds] = useState<string[]>([]);
   const [selectedSubcategoryIds, setSelectedSubcategoryIds] = useState<string[]>([]);
-  const [expandedStatsCategoryIds, setExpandedStatsCategoryIds] = useState<string[]>([]);
+  const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [editingTransaction, setEditingTransaction] = useState<MoneyTransaction | null>(null);
   const [estimateAmount, setEstimateAmount] = useState('');
   const [estimateDate, setEstimateDate] = useState('');
@@ -321,10 +324,21 @@ export default function MoneyHomeScreen() {
     if (!data || !statsTransactions) return null;
     const categories = new Set(selectedCategoryIds);
     const subcategories = new Set(selectedSubcategoryIds);
+    const tags = new Set(selectedTagIds);
+    const taggedSubcategories = new Set(
+      data.subcategories
+        .filter((subcategory) =>
+          (data.itemTags[subcategory.item_id ?? ''] ?? []).some((tagId) => tags.has(tagId)),
+        )
+        .map((subcategory) => subcategory.id),
+    );
+    const selectedItems = new Set([...subcategories, ...taggedSubcategories]);
     const transactions = statsTransactions.filter(
       (transaction) =>
         (transaction.category_id != null && categories.has(transaction.category_id)) ||
-        (transaction.subcategory_id != null && subcategories.has(transaction.subcategory_id)),
+        (transaction.subcategory_id != null &&
+          (subcategories.has(transaction.subcategory_id) ||
+            taggedSubcategories.has(transaction.subcategory_id))),
     );
     const rangeTransactions = transactions.filter((transaction) => {
       const date = transaction.occurred_at.slice(0, 10);
@@ -397,7 +411,7 @@ export default function MoneyHomeScreen() {
           ),
         })),
       ...data.subcategories
-        .filter((subcategory) => selectedSubcategoryIds.includes(subcategory.id))
+        .filter((subcategory) => selectedItems.has(subcategory.id))
         .map((subcategory) => ({
           id: `subcategory:${subcategory.id}`,
           name: subcategory.name,
@@ -448,6 +462,7 @@ export default function MoneyHomeScreen() {
     statsTransactions,
     selectedCategoryIds,
     selectedSubcategoryIds,
+    selectedTagIds,
     statsRangeDays,
     statsDateRange,
     statsDirection,
@@ -813,14 +828,10 @@ export default function MoneyHomeScreen() {
     );
   };
 
-  const selectAllCategories = () => {
-    setSelectedCategoryIds(data?.categories.map((category) => category.id) ?? []);
-    setSelectedSubcategoryIds(data?.subcategories.map((subcategory) => subcategory.id) ?? []);
-  };
-
   const clearCategories = () => {
     setSelectedCategoryIds([]);
     setSelectedSubcategoryIds([]);
+    setSelectedTagIds([]);
   };
 
   const toggleSubcategory = (subcategoryId: string) => {
@@ -828,14 +839,6 @@ export default function MoneyHomeScreen() {
       current.includes(subcategoryId)
         ? current.filter((id) => id !== subcategoryId)
         : [...current, subcategoryId],
-    );
-  };
-
-  const toggleStatsCategoryExpanded = (categoryId: string) => {
-    setExpandedStatsCategoryIds((current) =>
-      current.includes(categoryId)
-        ? current.filter((id) => id !== categoryId)
-        : [...current, categoryId],
     );
   };
 
@@ -1597,6 +1600,17 @@ export default function MoneyHomeScreen() {
       {view === 'Settings' && (
         <>
           <CardBlock>
+            <ThemedText type="smallBold">Categories, items & tags</ThemedText>
+            <ThemedText themeColor="textSecondary">
+              Share an item across categories while keeping a separate price for each one.
+            </ThemedText>
+            <UiButton
+              label="Manage categories, items & tags"
+              variant="secondary"
+              onPress={() => router.push('/money/manage')}
+            />
+          </CardBlock>
+          <CardBlock>
             <ThemedText type="smallBold">Currency</ThemedText>
             <ThemedText themeColor="textSecondary">
               Changing currency updates the display format; it does not convert existing amounts.
@@ -1749,7 +1763,7 @@ export default function MoneyHomeScreen() {
               <View style={styles.flex}>
                 <ThemedText>Include estimates</ThemedText>
                 <ThemedText type="small" themeColor="textSecondary">
-                  Adds pending estimates in the selected range to totals and category stats.
+                  Adds pending estimates in the selected range to totals and selected stats.
                 </ThemedText>
               </View>
             </Pressable>
@@ -1764,20 +1778,35 @@ export default function MoneyHomeScreen() {
           </CardBlock>
 
           <CardBlock>
-            <ThemedText type="smallBold">Choose categories and items</ThemedText>
+            <ThemedText type="smallBold">Choose what to include</ThemedText>
             <ThemedText themeColor="textSecondary">
-              Category totals include all their subcategories. Selecting both a category and an
-              item won’t double-count the combined totals. Estimates are included only when the
-              option above is enabled.
+              Select categories, individual items, and/or tags. Selecting overlapping choices
+              won’t double-count transactions.
             </ThemedText>
+            <View style={styles.chipWrap}>
+              {(['Categories', 'Items', 'Tags'] as const).map((mode) => (
+                <ChoiceChip
+                  key={mode}
+                  label={mode}
+                  selected={statsSelectionMode === mode}
+                  onPress={() => setStatsSelectionMode(mode)}
+                />
+              ))}
+            </View>
             <View style={styles.selectionActions}>
               <Pressable
                 accessibilityRole="button"
-                onPress={selectAllCategories}
-                disabled={
-                  selectedCategoryIds.length === data.categories.length &&
-                  selectedSubcategoryIds.length === data.subcategories.length
-                }
+                onPress={() => {
+                  if (statsSelectionMode === 'Categories') {
+                    setSelectedCategoryIds(data.categories.map((category) => category.id));
+                  } else if (statsSelectionMode === 'Items') {
+                    setSelectedSubcategoryIds(
+                      data.subcategories.map((subcategory) => subcategory.id),
+                    );
+                  } else {
+                    setSelectedTagIds(data.tags.map((tag) => tag.id));
+                  }
+                }}
                 style={styles.selectionAction}>
                 <ThemedText type="small" style={{ color: theme.tint, fontWeight: '600' }}>
                   Select all
@@ -1786,111 +1815,118 @@ export default function MoneyHomeScreen() {
               <Pressable
                 accessibilityRole="button"
                 onPress={clearCategories}
-                disabled={selectedCategoryIds.length === 0 && selectedSubcategoryIds.length === 0}
+                disabled={
+                  selectedCategoryIds.length === 0 &&
+                  selectedSubcategoryIds.length === 0 &&
+                  selectedTagIds.length === 0
+                }
                 style={styles.selectionAction}>
                 <ThemedText type="small" style={{ color: theme.error, fontWeight: '600' }}>
                   Clear
                 </ThemedText>
               </Pressable>
             </View>
-            {data?.categories.length === 0 ? (
-              <ThemedText themeColor="textSecondary">
-                No categories yet. Add some in the Add tab.
-              </ThemedText>
-            ) : (
-              <>
-                <ThemedText type="smallBold" style={styles.sectionTitle}>
-                  Expenses
+            {statsSelectionMode === 'Categories' ? (
+              data.categories.length === 0 ? (
+                <ThemedText themeColor="textSecondary">
+                  No categories yet. Add some in the Add tab.
                 </ThemedText>
-                <View style={styles.statsCategoryList}>
-                  {expenseCategories.map((category) => {
-                    const expanded = expandedStatsCategoryIds.includes(category.id);
-                    const subcategories = data.subcategories.filter(
-                      (subcategory) => subcategory.category_id === category.id,
+              ) : (
+                <>
+                  <ThemedText type="smallBold" style={styles.sectionTitle}>
+                    Expenses
+                  </ThemedText>
+                  <View style={styles.chipWrap}>
+                    {expenseCategories.map((category) => (
+                      <CategoryChip
+                        key={category.id}
+                        category={category}
+                        selected={selectedCategoryIds.includes(category.id)}
+                        onPress={() => toggleCategory(category.id)}
+                      />
+                    ))}
+                  </View>
+                  <ThemedText type="smallBold" style={styles.sectionTitle}>
+                    Income
+                  </ThemedText>
+                  <View style={styles.chipWrap}>
+                    {incomeCategories.map((category) => (
+                      <CategoryChip
+                        key={category.id}
+                        category={category}
+                        selected={selectedCategoryIds.includes(category.id)}
+                        onPress={() => toggleCategory(category.id)}
+                      />
+                    ))}
+                  </View>
+                </>
+              )
+            ) : statsSelectionMode === 'Items' ? (
+              data.subcategories.length === 0 ? (
+                <ThemedText themeColor="textSecondary">
+                  No items yet. Add items in Money Tracker settings.
+                </ThemedText>
+              ) : (
+                <View style={styles.chipWrap}>
+                  {data.subcategories.map((subcategory) => {
+                    const selected = selectedSubcategoryIds.includes(subcategory.id);
+                    const category = data.categories.find(
+                      (item) => item.id === subcategory.category_id,
                     );
                     return (
-                      <View key={category.id} style={styles.statsCategorySection}>
-                        <View style={styles.statsCategoryHeader}>
-                          <View style={styles.flex}>
-                            <CategoryChip
-                              category={category}
-                              selected={selectedCategoryIds.includes(category.id)}
-                              onPress={() => toggleCategory(category.id)}
-                            />
-                          </View>
-                          {subcategories.length > 0 ? (
-                            <Pressable
-                              accessibilityRole="button"
-                              accessibilityLabel={`${expanded ? 'Hide' : 'Show'} ${category.name} items`}
-                              onPress={() => toggleStatsCategoryExpanded(category.id)}
-                              style={[styles.expandStatsButton, { backgroundColor: theme.backgroundElement }]}>
-                              <ThemedText style={{ color: theme.tint, fontWeight: '700' }}>
-                                {expanded ? 'Hide items' : `${subcategories.length} items`}
-                              </ThemedText>
-                            </Pressable>
-                          ) : null}
-                        </View>
-                        {expanded ? (
-                          <View style={styles.chipWrap}>
-                            {subcategories.map((subcategory) => (
-                              <Pressable
-                                key={subcategory.id}
-                                accessibilityRole="checkbox"
-                                accessibilityState={{
-                                  checked: selectedSubcategoryIds.includes(subcategory.id),
-                                }}
-                                onPress={() => toggleSubcategory(subcategory.id)}
-                                style={[
-                                  styles.chip,
-                                  {
-                                    backgroundColor: selectedSubcategoryIds.includes(subcategory.id)
-                                      ? theme.tint
-                                      : theme.background,
-                                    borderColor: selectedSubcategoryIds.includes(subcategory.id)
-                                      ? theme.tint
-                                      : theme.backgroundSelected,
-                                  },
-                                ]}>
-                                <ThemedText
-                                  style={{
-                                    color: selectedSubcategoryIds.includes(subcategory.id)
-                                      ? '#fff'
-                                      : theme.text,
-                                  }}>
-                                  {subcategory.name}
-                                  {subcategory.amount_minor != null
-                                    ? ` · ${formatMoney(subcategory.amount_minor, preferences.currency)}/ea`
-                                    : ''}
-                                </ThemedText>
-                              </Pressable>
-                            ))}
-                          </View>
-                        ) : null}
-                      </View>
+                      <Pressable
+                        key={subcategory.id}
+                        accessibilityRole="checkbox"
+                        accessibilityState={{ checked: selected }}
+                        onPress={() => toggleSubcategory(subcategory.id)}
+                        style={[
+                          styles.chip,
+                          {
+                            backgroundColor: selected ? theme.tint : theme.background,
+                            borderColor: selected ? theme.tint : theme.backgroundSelected,
+                          },
+                        ]}>
+                        <ThemedText style={{ color: selected ? '#fff' : theme.text }}>
+                          {subcategory.name} · {category?.name ?? 'Unknown category'}
+                          {subcategory.amount_minor != null
+                            ? ` · ${formatMoney(subcategory.amount_minor, preferences.currency)}/ea`
+                            : ''}
+                        </ThemedText>
+                      </Pressable>
                     );
                   })}
                 </View>
-                <ThemedText type="smallBold" style={styles.sectionTitle}>
-                  Income
-                </ThemedText>
-                <View style={styles.chipWrap}>
-                  {incomeCategories.map((category) => (
-                    <CategoryChip
-                      key={category.id}
-                      category={category}
-                      selected={selectedCategoryIds.includes(category.id)}
-                      onPress={() => toggleCategory(category.id)}
-                    />
-                  ))}
-                </View>
-              </>
+              )
+            ) : data.tags.length === 0 ? (
+              <ThemedText themeColor="textSecondary">
+                No tags yet. Add tags in Money Tracker settings.
+              </ThemedText>
+            ) : (
+              <View style={styles.chipWrap}>
+                {data.tags.map((tag) => (
+                  <ChoiceChip
+                    key={tag.id}
+                    label={tag.name}
+                    selected={selectedTagIds.includes(tag.id)}
+                    onPress={() =>
+                      setSelectedTagIds((current) =>
+                        current.includes(tag.id)
+                          ? current.filter((id) => id !== tag.id)
+                          : [...current, tag.id],
+                      )
+                    }
+                  />
+                ))}
+              </View>
             )}
           </CardBlock>
 
-          {(selectedCategoryIds.length === 0 && selectedSubcategoryIds.length === 0) &&
+          {(selectedCategoryIds.length === 0 &&
+            selectedSubcategoryIds.length === 0 &&
+            selectedTagIds.length === 0) &&
           data.categories.length > 0 ? (
             <CardBlock style={styles.emptyCard}>
-              <ThemedText themeColor="textSecondary">Select categories or items to see their stats.</ThemedText>
+              <ThemedText themeColor="textSecondary">Select categories, items, or tags to see their stats.</ThemedText>
             </CardBlock>
           ) : null}
 
@@ -1905,7 +1941,9 @@ export default function MoneyHomeScreen() {
               <ThemedText themeColor="textSecondary">{statsError}</ThemedText>
               <UiButton label="Try again" variant="secondary" onPress={refresh} />
             </CardBlock>
-          ) : (selectedCategoryIds.length > 0 || selectedSubcategoryIds.length > 0) &&
+          ) : (selectedCategoryIds.length > 0 ||
+            selectedSubcategoryIds.length > 0 ||
+            selectedTagIds.length > 0) &&
             categoryStats ? (
             <>
               <View style={styles.statsRow}>
@@ -3731,23 +3769,6 @@ const styles = StyleSheet.create({
   loadingCard: {
     alignItems: 'center',
     gap: Spacing.two,
-  },
-  statsCategoryList: {
-    gap: Spacing.two,
-  },
-  statsCategorySection: {
-    gap: Spacing.one,
-  },
-  statsCategoryHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.one,
-  },
-  expandStatsButton: {
-    minHeight: 40,
-    justifyContent: 'center',
-    paddingHorizontal: Spacing.two,
-    borderRadius: 10,
   },
   targetStats: {
     borderTopWidth: StyleSheet.hairlineWidth,

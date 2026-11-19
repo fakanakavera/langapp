@@ -155,10 +155,27 @@ export type MoneyCategory = {
 export type MoneySubcategory = {
   id: string;
   category_id: string;
+  item_id: string | null;
   name: string;
   amount_minor: number | null;
   barcode: string | null;
   created_at: string;
+};
+
+export type MoneyItem = {
+  id: string;
+  name: string;
+  barcode: string | null;
+};
+
+export type MoneyTag = {
+  id: string;
+  name: string;
+};
+
+export type MoneyItemTag = {
+  item_id: string;
+  tag_id: string;
 };
 
 export type MoneyTransaction = {
@@ -249,6 +266,9 @@ export type GlobalBackupPayload = {
   // Money
   moneyCategories: MoneyCategory[];
   moneySubcategories: MoneySubcategory[];
+  moneyItems?: MoneyItem[];
+  moneyTags?: MoneyTag[];
+  moneyItemTags?: MoneyItemTag[];
   moneyTransactions: MoneyTransaction[];
   moneyRecurring: MoneyRecurring[];
   moneyBudgets: MoneyBudget[];

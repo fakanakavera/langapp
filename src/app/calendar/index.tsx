@@ -31,6 +31,7 @@ import {
   type CalendarEvent,
   type CalendarTodo,
 } from '@/db/queries';
+import { ensureEstimateCalendarTodos } from '@/money/storage';
 import { useDatabase } from '@/providers/database-provider';
 import {
   cancelCalendarEventNotification,
@@ -189,15 +190,24 @@ export default function CalendarHomeScreen() {
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([listCalendarEvents(), listCalendarTodos()]).then(
-      ([evs, tds]) => {
+    ensureEstimateCalendarTodos()
+      .then(() => Promise.all([listCalendarEvents(), listCalendarTodos()]))
+      .then(([evs, tds]) => {
         if (!cancelled) {
           setEvents(evs);
           setTodos(tds);
           setLoading(false);
         }
-      },
-    );
+      })
+      .catch((caught: unknown) => {
+        if (!cancelled) {
+          setLoading(false);
+          Alert.alert(
+            'Could not load calendar',
+            caught instanceof Error ? caught.message : String(caught),
+          );
+        }
+      });
     return () => {
       cancelled = true;
     };

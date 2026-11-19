@@ -140,6 +140,7 @@ CREATE TABLE IF NOT EXISTS money_categories (
 CREATE TABLE IF NOT EXISTS money_subcategories (
   id TEXT PRIMARY KEY NOT NULL,
   category_id TEXT NOT NULL,
+  item_id TEXT,
   name TEXT NOT NULL,
   amount_minor INTEGER,
   barcode TEXT,
@@ -149,6 +150,25 @@ CREATE TABLE IF NOT EXISTS money_subcategories (
 );
 
 CREATE INDEX IF NOT EXISTS idx_money_subcategories_category ON money_subcategories(category_id);
+
+CREATE TABLE IF NOT EXISTS money_items (
+  id TEXT PRIMARY KEY NOT NULL,
+  name TEXT NOT NULL,
+  barcode TEXT
+);
+
+CREATE TABLE IF NOT EXISTS money_tags (
+  id TEXT PRIMARY KEY NOT NULL,
+  name TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS money_item_tags (
+  item_id TEXT NOT NULL,
+  tag_id TEXT NOT NULL,
+  PRIMARY KEY (item_id, tag_id),
+  FOREIGN KEY (item_id) REFERENCES money_items(id) ON DELETE CASCADE,
+  FOREIGN KEY (tag_id) REFERENCES money_tags(id) ON DELETE CASCADE
+);
 
 CREATE TABLE IF NOT EXISTS money_transactions (
   id TEXT PRIMARY KEY NOT NULL,

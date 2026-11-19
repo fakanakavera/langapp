@@ -15,9 +15,12 @@ import type {
   Inflection,
   MoneyBudget,
   MoneyCategory,
+  MoneyItem,
+  MoneyItemTag,
   MoneyRecurring,
   MoneySetting,
   MoneySubcategory,
+  MoneyTag,
   MoneyTransaction,
   ReviewRow,
   UnknownWord,
@@ -56,6 +59,9 @@ export async function dumpGlobalBackup(): Promise<GlobalBackupPayload> {
     userDictionary,
     moneyCategories,
     moneySubcategories,
+    moneyItems,
+    moneyTags,
+    moneyItemTags,
     moneyTransactions,
     moneyRecurring,
     moneyBudgets,
@@ -75,6 +81,9 @@ export async function dumpGlobalBackup(): Promise<GlobalBackupPayload> {
     db.getAllAsync<UserDictionaryEntry>('SELECT * FROM user_dictionary'),
     db.getAllAsync<MoneyCategory>('SELECT * FROM money_categories'),
     db.getAllAsync<MoneySubcategory>('SELECT * FROM money_subcategories'),
+    db.getAllAsync<MoneyItem>('SELECT * FROM money_items'),
+    db.getAllAsync<MoneyTag>('SELECT * FROM money_tags'),
+    db.getAllAsync<MoneyItemTag>('SELECT * FROM money_item_tags'),
     db.getAllAsync<MoneyTransaction>('SELECT * FROM money_transactions'),
     db.getAllAsync<MoneyRecurring>('SELECT * FROM money_recurring'),
     db.getAllAsync<MoneyBudget>('SELECT * FROM money_budgets'),
@@ -109,6 +118,9 @@ export async function dumpGlobalBackup(): Promise<GlobalBackupPayload> {
     userDictionary,
     moneyCategories,
     moneySubcategories,
+    moneyItems,
+    moneyTags,
+    moneyItemTags,
     moneyTransactions,
     moneyRecurring,
     moneyBudgets,
@@ -148,7 +160,10 @@ export async function restoreGlobalBackup(payload: GlobalBackupPayload): Promise
       await db.execAsync('DELETE FROM money_transactions');
       await db.execAsync('DELETE FROM money_recurring');
       await db.execAsync('DELETE FROM money_budgets');
+      await db.execAsync('DELETE FROM money_item_tags');
       await db.execAsync('DELETE FROM money_subcategories');
+      await db.execAsync('DELETE FROM money_items');
+      await db.execAsync('DELETE FROM money_tags');
       await db.execAsync('DELETE FROM money_categories');
       await db.execAsync('DELETE FROM money_settings');
       await db.execAsync('DELETE FROM calendar_events');
@@ -200,6 +215,18 @@ export async function restoreGlobalBackup(payload: GlobalBackupPayload): Promise
           cat.name,
           cat.created_at,
         );
+      }
+      const restoredItems = payload.moneyItems ?? [];
+      for (const item of restoredItems) {
+        await db.runAsync(
+          'INSERT INTO money_items (id, name, barcode) VALUES (?, ?, ?)',
+          item.id,
+          item.name,
+          item.barcode ?? null,
+        );
+      }
+      for (const tag of payload.moneyTags ?? []) {
+        await db.runAsync('INSERT INTO money_tags (id, name) VALUES (?, ?)', tag.id, tag.name);
       }
       for (const ev of payload.calendarEvents) {
         await db.runAsync(
@@ -289,15 +316,33 @@ export async function restoreGlobalBackup(payload: GlobalBackupPayload): Promise
         );
       }
       for (const sub of payload.moneySubcategories) {
+        const itemId = sub.item_id ?? `legacy-${sub.id}`;
+        if (!restoredItems.some((item) => item.id === itemId)) {
+          await db.runAsync(
+            'INSERT OR IGNORE INTO money_items (id, name, barcode) VALUES (?, ?, ?)',
+            itemId,
+            sub.name,
+            sub.barcode ?? null,
+          );
+        }
         await db.runAsync(
-          `INSERT INTO money_subcategories (id, category_id, name, amount_minor, barcode, created_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO money_subcategories
+           (id, category_id, item_id, name, amount_minor, barcode, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
           sub.id,
           sub.category_id,
+          itemId,
           sub.name,
           sub.amount_minor ?? null,
           sub.barcode ?? null,
           sub.created_at,
+        );
+      }
+      for (const mapping of payload.moneyItemTags ?? []) {
+        await db.runAsync(
+          'INSERT OR IGNORE INTO money_item_tags (item_id, tag_id) VALUES (?, ?)',
+          mapping.item_id,
+          mapping.tag_id,
         );
       }
       for (const rec of payload.moneyRecurring) {
@@ -475,6 +520,9 @@ export async function importGlobalBackupFile(): Promise<{ tables: number; rows: 
     json.userDictionary.length +
     json.moneyCategories.length +
     json.moneySubcategories.length +
+    (json.moneyItems?.length ?? 0) +
+    (json.moneyTags?.length ?? 0) +
+    (json.moneyItemTags?.length ?? 0) +
     json.moneyTransactions.length +
     json.moneyRecurring.length +
     json.moneyBudgets.length +
@@ -483,5 +531,5 @@ export async function importGlobalBackupFile(): Promise<{ tables: number; rows: 
     json.calendarTodos.length +
     json.meta.length;
 
-  return { tables: 18, rows: totalRows };
+  return { tables: 21, rows: totalRows };
 }

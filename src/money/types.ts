@@ -57,9 +57,15 @@ export type MoneyBudget = {
 export type MoneySubcategory = {
   id: string;
   category_id: string;
+  item_id: string | null;
   name: string;
   amount_minor: number | null;
   barcode: string | null;
+};
+
+export type MoneyTag = {
+  id: string;
+  name: string;
 };
 
 export type MoneyPreferences = {

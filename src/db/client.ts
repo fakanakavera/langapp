@@ -302,6 +302,48 @@ async function runMigrations(db: SQLite.SQLiteDatabase): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_money_subcategories_barcode
       ON money_subcategories(barcode);
   `);
+  if (!subcategoryColumns.some((column) => column.name === 'item_id')) {
+    await db.execAsync('ALTER TABLE money_subcategories ADD COLUMN item_id TEXT;');
+  }
+  await db.execAsync(`
+    CREATE TABLE IF NOT EXISTS money_items (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      barcode TEXT
+    );
+    CREATE TABLE IF NOT EXISTS money_tags (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL UNIQUE
+    );
+    CREATE TABLE IF NOT EXISTS money_item_tags (
+      item_id TEXT NOT NULL,
+      tag_id TEXT NOT NULL,
+      PRIMARY KEY (item_id, tag_id),
+      FOREIGN KEY (item_id) REFERENCES money_items(id) ON DELETE CASCADE,
+      FOREIGN KEY (tag_id) REFERENCES money_tags(id) ON DELETE CASCADE
+    );
+  `);
+  const legacySubcategories = await db.getAllAsync<{
+    id: string;
+    name: string;
+    barcode: string | null;
+  }>(
+    'SELECT id, name, barcode FROM money_subcategories WHERE item_id IS NULL',
+  );
+  for (const subcategory of legacySubcategories) {
+    const itemId = `legacy-${subcategory.id}`;
+    await db.runAsync(
+      'INSERT OR IGNORE INTO money_items (id, name, barcode) VALUES (?, ?, ?)',
+      itemId,
+      subcategory.name,
+      subcategory.barcode,
+    );
+    await db.runAsync(
+      'UPDATE money_subcategories SET item_id = ? WHERE id = ?',
+      itemId,
+      subcategory.id,
+    );
+  }
 
   // Add subcategory_id to money_transactions for older installs.
   const txCols = await db.getAllAsync<{ name: string }>(
